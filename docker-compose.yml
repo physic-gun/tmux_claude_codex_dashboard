@@ -1,0 +1,25 @@
+services:
+  tmux-dashboard:
+    build: .
+    image: tmux-dashboard:latest
+    container_name: tmux-dashboard
+    ports:
+      - "6880:6880"
+    environment:
+      # All optional. If JWT_SECRET / ADMIN_PASSWORD are left empty, the app generates
+      # a persistent random secret and prints a random admin password to the logs on
+      # first boot (see `docker compose logs`). Set them here to pin your own values.
+      JWT_SECRET: "${JWT_SECRET:-}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      PORT: "6880"
+      # New windows start in <WORKSPACE_ROOT>/<username>/<groupname> (created on demand).
+      WORKSPACE_ROOT: "/workspace"
+    volumes:
+      - tmux-dash-data:/app/server/data
+      # Per-user workspaces live here; point the host path at wherever your users' dirs are.
+      - "${WORKSPACE_HOST_DIR:-./workspace}:/workspace"
+    restart: unless-stopped
+
+volumes:
+  tmux-dash-data:

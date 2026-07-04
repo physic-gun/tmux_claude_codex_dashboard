@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+*.log
+.env
+.DS_Store
+certs/
+*.pem
+tabs-snapshot.txt

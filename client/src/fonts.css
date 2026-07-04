@@ -1,0 +1,62 @@
+/* Self-hosted terminal fonts. Referenced by name in SettingsModal's TERM_FONTS and
+   composed into the xterm font stack in TerminalView. woff2 files live in public/fonts
+   (copied verbatim into dist/fonts by Vite). font-display: swap so a slow CJK download
+   never blanks the terminal — it paints in the fallback face, then swaps in.
+
+   The four Latin families ship 400 + 700 (real bold, no synthesis). Maple Mono CN is a
+   single Regular weight (~5.2 MB, covers Latin + full CJK); bold is synthesized. A CJK
+   @font-face is only fetched when text actually renders in that family, so it costs
+   nothing until the user picks "Maple Mono CN". */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/fonts/JetBrainsMono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 700; font-display: swap;
+  src: url('/fonts/JetBrainsMono-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Fira Code';
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/fonts/FiraCode-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fira Code';
+  font-style: normal; font-weight: 700; font-display: swap;
+  src: url('/fonts/FiraCode-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Source Code Pro';
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/fonts/SourceCodePro-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Source Code Pro';
+  font-style: normal; font-weight: 700; font-display: swap;
+  src: url('/fonts/SourceCodePro-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Cascadia Code';
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/fonts/CascadiaCode-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Cascadia Code';
+  font-style: normal; font-weight: 700; font-display: swap;
+  src: url('/fonts/CascadiaCode-700.woff2') format('woff2');
+}
+
+/* Maple Mono CN — Latin + full CJK in one dual-width face. Regular only; the terminal's
+   A+/A− and any bold text synthesize weight from this. Lazy: only fetched once some
+   glyph is actually drawn in this family. */
+@font-face {
+  font-family: 'Maple Mono CN';
+  font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('/fonts/MapleMonoCN-Regular.woff2') format('woff2');
+}
