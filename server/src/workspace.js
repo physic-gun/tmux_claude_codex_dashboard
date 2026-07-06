@@ -115,6 +115,49 @@ export function prepareCustomDir(rawPath) {
   return { dir };
 }
 
+// ── Read-only file preview (clipboard file-preview split) ─────────────────────────────────────
+// A copied path can be previewed in the clipboard panel. Cap what we ship to the browser so a
+// huge or binary file can't blow up the response / the DOM.
+const MAX_VIEW_BYTES = 2 * 1024 * 1024; // 2 MB
+
+// Resolve a copied-path candidate for the viewer: expand a leading ~, keep an absolute path as-is,
+// and anchor a relative path to `baseDir` (claude's pane cwd). Returns null when there's nothing
+// usable (empty candidate, or relative path with no base to resolve against).
+export function resolveViewPath(candidate, baseDir) {
+  const e = expandHome(candidate);
+  if (!e) return null;
+  if (path.isAbsolute(e)) return path.resolve(e);
+  if (!baseDir) return null;
+  return path.resolve(baseDir, e);
+}
+
+// Read a file for the read-only viewer. Never throws — returns a descriptor the client renders:
+//   { exists:false }                                   — nothing at that path
+//   { exists:true, isFile:false, isDir }               — a directory (or other non-file)
+//   { exists:true, isFile:true, binary:true, size }    — looks binary; content withheld
+//   { exists:true, isFile:true, size, content, truncated } — text (capped at MAX_VIEW_BYTES)
+export function readFileForView(resolved) {
+  let st;
+  try { st = fs.statSync(resolved); } catch { return { exists: false }; }
+  if (!st.isFile()) return { exists: true, isFile: false, isDir: st.isDirectory() };
+  const truncated = st.size > MAX_VIEW_BYTES;
+  const len = Math.min(st.size, MAX_VIEW_BYTES);
+  let buf;
+  try {
+    const fd = fs.openSync(resolved, 'r');
+    try {
+      buf = Buffer.alloc(len);
+      if (len > 0) fs.readSync(fd, buf, 0, len, 0);
+    } finally { fs.closeSync(fd); }
+  } catch (e) {
+    return { exists: true, isFile: true, error: String(e?.message || e) };
+  }
+  // Binary sniff: a NUL byte in the sampled head ⇒ treat as binary (don't ship raw bytes).
+  const sample = buf.subarray(0, Math.min(buf.length, 8192));
+  if (sample.includes(0)) return { exists: true, isFile: true, binary: true, size: st.size };
+  return { exists: true, isFile: true, size: st.size, content: buf.toString('utf8'), truncated };
+}
+
 // CLI-style directory-name completion for the custom-path input. Given a partial absolute
 // path, list the child directories of its parent whose name matches the typed prefix, plus
 // their longest common prefix (so Tab can extend the input). Only directories are offered.

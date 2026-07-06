@@ -5,7 +5,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
-import { getToken } from '../api';
+import { getToken, api } from '../api';
 
 // Copy text to the clipboard, reporting whether it actually landed. navigator.clipboard
 // only works in a secure context (https or localhost) AND — outside a user gesture — only
@@ -112,6 +112,120 @@ function extractOsc52(chunk: string, carry: string): { texts: string[]; carry: s
   }
   return { texts, carry: outCarry };
 }
+
+// ── Clipboard file preview ────────────────────────────────────────────────────────────────────
+// Derive a single file-path candidate from copied text, so a clip that is just a path can be
+// previewed. Only single-line text is considered; one layer of wrapping quotes/backticks is
+// stripped, and a trailing :line[:col] reference (as in claude's `src/foo.ts:42`) is dropped.
+// Returns '' when the text doesn't look like a path, so we never probe the server for prose.
+function filePathCandidate(text: string): string {
+  let s = (text || '').trim();
+  if (!s || s.length > 4096 || /[\n\r\t]/.test(s)) return '';
+  const wrapped = s.match(/^([`'"])([\s\S]*)\1$/); // strip one layer of matching quotes/backticks
+  if (wrapped) s = wrapped[2].trim();
+  s = s.replace(/:(\d+)(:\d+)?$/, ''); // drop a trailing path:line[:col] reference
+  if (!s || /[\x00-\x1f]/.test(s)) return '';
+  // Must plausibly be a path: has a slash, starts with ~ or ./ ../, or is a bare filename.ext.
+  const looksPath =
+    s.includes('/') || /^~/.test(s) || /^\.\.?\//.test(s) || /^[\w.@+-]+\.[\w]{1,12}$/.test(s);
+  return looksPath ? s : '';
+}
+
+const MARKDOWN_RE = /\.(md|markdown|mdx|mkd)$/i;
+const isMarkdownPath = (p: string) => MARKDOWN_RE.test(p || '');
+
+// Human-readable byte size for the preview header / notes.
+function fmtSize(n?: number): string {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Minimal, dependency-free, XSS-safe Markdown → HTML for the read-only preview. Everything is
+// HTML-escaped FIRST, then a fixed, whitelisted set of tags is introduced; link hrefs are
+// scheme-checked so a `javascript:` URL can't sneak through. Not a full CommonMark implementation —
+// just enough (headings, code, lists, quotes, emphasis, links, rules) to read a file comfortably.
+function escHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'
+  );
+}
+// Inline spans over already-escaped text: `code`, links, **bold**/__bold__, *italic*/_italic_.
+// Emitted tags (code spans, and each <a…>/</a>) are stashed behind NUL sentinels BEFORE the
+// emphasis passes, so a * or _ inside a URL/href can't bleed into the generated markup; the
+// link LABEL is left in place so emphasis still applies to it. Sentinels are restored at the end.
+function mdInline(escaped: string): string {
+  const tokens: string[] = [];
+  const stash = (html: string) => `\x00${tokens.push(html) - 1}\x00`;
+  let s = escaped.replace(/`([^`]+)`/g, (_m, c) => stash(`<code>${c}</code>`));
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => {
+    const ok = /^(https?:\/\/|mailto:|\/|\.{0,2}\/|#)/i.test(url) || /^[\w.-]+\//.test(url);
+    return ok ? stash(`<a href="${url}" target="_blank" rel="noopener noreferrer">`) + label + stash('</a>') : label;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>');
+  return s.replace(/\x00(\d+)\x00/g, (_m, i) => tokens[Number(i)]);
+}
+function renderMarkdown(src: string): string {
+  const lines = (src || '').replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  let para: string[] = [];
+  let listType: 'ul' | 'ol' | null = null;
+  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(escHtml(para.join(' ')))}</p>`); para = []; } };
+  const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i];
+    const fence = line.match(/^\s*(```+|~~~+)/); // fenced code block
+    if (fence) {
+      flushPara(); closeList();
+      const close = fence[1][0] === '`' ? /^\s*```+/ : /^\s*~~~+/;
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
+      i++; // skip the closing fence
+      out.push(`<pre class="md-code"><code>${escHtml(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+    if (/^\s*$/.test(line)) { flushPara(); closeList(); i++; continue; }
+    const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (h) { flushPara(); closeList(); out.push(`<h${h[1].length}>${mdInline(escHtml(h[2]))}</h${h[1].length}>`); i++; continue; }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push('<hr />'); i++; continue; }
+    const bq = line.match(/^\s{0,3}>\s?(.*)$/);
+    if (bq) {
+      flushPara(); closeList();
+      const buf: string[] = [bq[1]];
+      i++;
+      while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s{0,3}>\s?/, ''));
+      out.push(`<blockquote>${mdInline(escHtml(buf.join(' ')))}</blockquote>`);
+      continue;
+    }
+    const ul = line.match(/^\s{0,3}[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s{0,3}\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const t: 'ul' | 'ol' = ul ? 'ul' : 'ol';
+      if (listType && listType !== t) closeList();
+      if (!listType) { listType = t; out.push(`<${t}>`); }
+      out.push(`<li>${mdInline(escHtml(ul ? ul[1] : ol![1]))}</li>`);
+      i++; continue;
+    }
+    para.push(line.trim());
+    i++;
+  }
+  flushPara(); closeList();
+  return out.join('\n');
+}
+
+// The result of probing a clip's text against the filesystem (see the detect effect).
+type FileView =
+  | { status: 'idle' | 'none' | 'loading' }
+  | { status: 'error'; error: string }
+  | {
+      status: 'ok'; path: string; base?: string | null;
+      size?: number; content?: string; truncated?: boolean; binary?: boolean; isFile?: boolean;
+    };
 
 // Apps like claude turn on mouse reporting (1000/1002/1003 + SGR 1006) to grab both drags
 // and the wheel. We ALWAYS strip the enable sequences before xterm sees them, so a plain
@@ -322,6 +436,16 @@ function VirtualKeyboard({ onKey, onClose }: { onKey: (d: string) => void; onClo
   );
 }
 
+// Track an overlay's open/close in a shared LIFO stack so a single global Esc handler can dismiss
+// the top-most overlay first and then work down — "依次关闭". Push on open, remove on close/unmount.
+function useOverlayStack(stackRef: { current: string[] }, id: string, open: boolean) {
+  useEffect(() => {
+    if (!open) return;
+    stackRef.current.push(id);
+    return () => { stackRef.current = stackRef.current.filter((x) => x !== id); };
+  }, [stackRef, id, open]);
+}
+
 export default function TerminalView({
   gid,
   windowName,
@@ -400,9 +524,61 @@ export default function TerminalView({
   const [clips, setClips] = useState<ClipItem[]>(() => loadClips(gid, windowName));
   const [clipListOpen, setClipListOpen] = useState(false);
   const [clipEdit, setClipEdit] = useState<{ id: number; text: string } | null>(null);
+  // File preview for the open clip: when its text is a path to a real file, its content is shown
+  // in a split below the source. `fileMd` toggles Markdown rendering, `fileZoom` pops a floating
+  // reader for viewing/copying. lastFilePathRef defaults the MD toggle once per distinct file.
+  const [fileView, setFileView] = useState<FileView>({ status: 'idle' });
+  const [fileMd, setFileMd] = useState(false);
+  const [fileZoom, setFileZoom] = useState(false);
+  const lastFilePathRef = useRef<string | null>(null);
   // On-screen English keyboard (mobile): docked at the CLI bottom, keys sent live to the pty.
   const [kbdOpen, setKbdOpen] = useState(false);
   const draftKey = `tmuxdash:draft:${gid}:${windowName}`;
+
+  // ── Overlay dismissal ──────────────────────────────────────────────────────────────────────
+  // The clipboard list + the three floating panels (clip editor, file zoom, Ctrl+G editor) form a
+  // stack. A global Esc closes the top-most one (even when focus is in the terminal, not the panel),
+  // so repeated Esc peels them off one by one. The clip list additionally closes on an outside click.
+  const overlayStackRef = useRef<string[]>([]);
+  const overlayClosersRef = useRef<Record<string, () => void>>({});
+  overlayClosersRef.current = {
+    clipList: () => setClipListOpen(false),
+    clipEdit: () => setClipEdit(null),
+    fileZoom: () => setFileZoom(false),
+    editor: () => setEditorOpen(false),
+  };
+  useOverlayStack(overlayStackRef, 'clipList', clipListOpen);
+  useOverlayStack(overlayStackRef, 'clipEdit', clipEdit != null);
+  useOverlayStack(overlayStackRef, 'fileZoom', fileZoom);
+  useOverlayStack(overlayStackRef, 'editor', editorOpen);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const stack = overlayStackRef.current;
+      if (!stack.length) return; // nothing open → let Esc reach the terminal (claude)
+      const close = overlayClosersRef.current[stack[stack.length - 1]];
+      if (!close) return;
+      e.preventDefault();
+      e.stopPropagation(); // don't also send ESC into the pty while we're dismissing a panel
+      close();
+    };
+    // Capture phase so this beats xterm's own textarea keydown handler regardless of focus.
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
+  // Clicking anywhere outside the open clip list collapses it. The list itself and the 📋 toggle are
+  // excluded: a click on a clip row (inside .clip-panel) opens the editor panel untouched, and the
+  // FAB keeps its own toggle. Clicking the editor panel is "outside", so the list tidies away.
+  useEffect(() => {
+    if (!clipListOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest('.clip-panel, .cli-fab')) return;
+      setClipListOpen(false);
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    return () => window.removeEventListener('pointerdown', onDown, true);
+  }, [clipListOpen]);
 
   // Auto mode derives the steps from the visible screen: small = ¼ of the rows (rounded up),
   // big = a near-full page (rows − 10). Otherwise the user's fixed settings are used.
@@ -939,6 +1115,49 @@ export default function TerminalView({
   // height — refit so cols/rows and the remote pty follow.
   useEffect(() => { doFitRef.current(); }, [kbdOpen]);
 
+  // Probe the open clip's text against the filesystem: if it's a path to a real file (absolute, or
+  // relative to claude's pane cwd), fetch its content for the preview split. Debounced so editing
+  // the text doesn't spam the server; cancelled on change/close so a stale response can't land.
+  useEffect(() => {
+    if (!clipEdit) { setFileView({ status: 'idle' }); return; }
+    const cand = filePathCandidate(clipEdit.text);
+    if (!cand) { setFileView({ status: 'none' }); return; }
+    let cancelled = false;
+    // Keep an already-resolved preview on screen while re-probing (an edit reruns this effect on
+    // every keystroke) — flashing 'loading' would collapse the split, jump the textarea height,
+    // and close/reopen the magnify reader. Returning the same object also lets React skip the
+    // re-render, so the MD-default effect below doesn't re-fire on a same-file re-probe.
+    setFileView((prev) => (prev.status === 'ok' ? prev : { status: 'loading' }));
+    const timer = window.setTimeout(async () => {
+      try {
+        const q = `/fs/file?path=${encodeURIComponent(cand)}&gid=${gid}&window=${encodeURIComponent(windowName)}`;
+        const r = await api.get(q);
+        if (cancelled) return;
+        if (r?.exists && r.isFile && !r.error) setFileView({ status: 'ok', ...r });
+        else if (r?.error) setFileView({ status: 'error', error: r.error }); // stat ok but read failed
+        else setFileView({ status: 'none' });
+      } catch (e) {
+        if (!cancelled) setFileView({ status: 'error', error: (e as Error).message });
+      }
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [clipEdit, gid, windowName]);
+
+  // Default the MD toggle to on for Markdown files, but only when a *new* file loads — so a manual
+  // toggle isn't undone by an unrelated re-probe (e.g. an edit that resolves to the same file).
+  useEffect(() => {
+    if (fileView.status === 'ok' && fileView.path && fileView.path !== lastFilePathRef.current) {
+      lastFilePathRef.current = fileView.path;
+      setFileMd(isMarkdownPath(fileView.path));
+    } else if (fileView.status === 'idle' || fileView.status === 'none' || fileView.status === 'error') {
+      lastFilePathRef.current = null; // terminal non-file states only — NOT the transient 'loading'
+    }
+  }, [fileView]);
+
+  // The magnify reader is tied to the current preview: close it whenever the file context is lost
+  // (clip closed, or the text no longer resolves to a file) so it can't silently reappear later.
+  useEffect(() => { if (fileView.status !== 'ok') setFileZoom(false); }, [fileView.status]);
+
   // Press-and-hold a scroll button: scroll once immediately, then auto-repeat while held.
   const repeatRef = useRef<{ t?: number; i?: number }>({});
   function stopRepeat() {
@@ -972,6 +1191,24 @@ export default function TerminalView({
     onTouchStart: fn,
     onTouchEnd: (e: ReactTouchEvent) => e.preventDefault(),
   });
+
+  // The read-only file content: Markdown-rendered or raw, plus binary/truncated notes. Shared by
+  // the inline preview split and the zoom (magnify) floating reader.
+  const fileBody = () => {
+    if (fileView.status !== 'ok') return null;
+    if (fileView.binary) return <div className="file-note">二进制文件，无法预览（{fmtSize(fileView.size)}）。</div>;
+    const content = fileView.content || '';
+    return (
+      <div className="file-viewer">
+        {fileMd && content ? (
+          <div className="md-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }} />
+        ) : (
+          <pre className="file-pre">{content || '（空文件）'}</pre>
+        )}
+        {fileView.truncated && <div className="file-note">文件较大，仅显示前一部分（共 {fmtSize(fileView.size)}）。</div>}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -1059,6 +1296,7 @@ export default function TerminalView({
         >
           <textarea
             className="float-textarea"
+            style={fileView.status === 'ok' ? { flex: '0 1 auto', height: 92, maxHeight: '40%', minHeight: 44 } : undefined}
             autoFocus
             value={clipEdit.text}
             onFocus={(e) => e.currentTarget.select()}
@@ -1068,6 +1306,50 @@ export default function TerminalView({
               else if (e.key === 'Escape') { e.preventDefault(); setClipEdit(null); }
             }}
           />
+          {/* When the clip's text is a path to a real file, preview its content in a split below.
+              📄 header carries the MD-render toggle and a magnify button (pops a floating reader).
+              No 'loading' note: detection is quick and a candidate can be a false positive (prose
+              with a slash), so we render the split only once the server confirms a real file. */}
+          {fileView.status === 'error' && <div className="file-note">读取失败：{fileView.error}</div>}
+          {fileView.status === 'ok' && (
+            <div className="clip-file">
+              <div className="clip-file-head">
+                <span className="clip-file-path" title={fileView.path}>📄 {fileView.path}</span>
+                <span className="clip-file-actions">
+                  <button className="clip-x" title="切换 Markdown 渲染 / 原文" onClick={() => setFileMd((v) => !v)}>
+                    {fileMd ? '原文' : 'MD'}
+                  </button>
+                  <button className="clip-x" title="放大查看（悬浮窗，可复制）" onClick={() => setFileZoom(true)}>⛶</button>
+                </span>
+              </div>
+              {fileBody()}
+            </div>
+          )}
+        </FloatingPanel>
+      )}
+      {/* Magnify: a larger, self-contained floating reader for the previewed file (view + copy). */}
+      {fileZoom && fileView.status === 'ok' && (
+        <FloatingPanel
+          title={`文件预览 · ${fileView.path}`}
+          storageKey="tmuxdash:panel:fileview"
+          defaultSize={{ w: 760, h: 560 }}
+          defaultOffset={72}
+          onClose={() => setFileZoom(false)}
+          footer={
+            <>
+              <button className="btn-ghost" style={{ marginRight: 'auto' }} onClick={() => setFileMd((v) => !v)}>
+                {fileMd ? '原文' : 'Markdown'}
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => copyText(fileView.content || '').then((ok) => showHintRef.current(ok ? '已复制文件内容' : '复制失败（需 https/已授权）'))}
+              >
+                复制全文
+              </button>
+            </>
+          }
+        >
+          {fileBody()}
         </FloatingPanel>
       )}
       {editorOpen && (
