@@ -641,15 +641,17 @@ export default function TerminalView({
     showHintRef.current('已发送到 claude');
   }
 
-  // Send the draft as a single bracketed paste so multi-line text is inserted (not
-  // submitted line-by-line) in apps like claude.
-  function sendDraft() {
+  // Send the draft as a single bracketed paste so multi-line text is inserted (not submitted
+  // line-by-line) in apps like claude. `submit` appends a trailing Enter OUTSIDE the paste so
+  // claude runs the prompt immediately ("直发 claude"); without it the text just lands in claude's
+  // input line for review ("插入不发送"). Empty draft sends nothing (no accidental blank submit).
+  function sendDraft(submit = false) {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setSendErr('连接已断开，无法发送（草稿已保存，可稍后重试）');
       return; // keep the editor open so the text isn't silently dropped
     }
-    if (draft) ws.send(JSON.stringify({ type: 'input', data: '\x1b[200~' + draft + '\x1b[201~' }));
+    if (draft) ws.send(JSON.stringify({ type: 'input', data: '\x1b[200~' + draft + '\x1b[201~' + (submit ? '\r' : '') }));
     setSendErr('');
     setEditorOpen(false);
     termRef.current?.focus();
@@ -1360,9 +1362,14 @@ export default function TerminalView({
           onClose={() => setEditorOpen(false)}
           footer={
             <>
-              {sendErr && <div className="err small" style={{ marginRight: 'auto', alignSelf: 'center' }}>{sendErr}</div>}
+              {/* Shortcut hint sits on the same row as the buttons (not inside them), on the left;
+                  a send error replaces it when the socket is down. */}
+              {sendErr
+                ? <div className="err small" style={{ marginRight: 'auto', alignSelf: 'center' }}>{sendErr}</div>
+                : <span className="editor-foot-hint">Ctrl/Cmd+Enter 直发 · Enter / Alt+Enter 换行 · Esc 关闭</span>}
               <button className="btn-ghost" onClick={() => setEditorOpen(false)}>取消</button>
-              <button className="btn-primary" onClick={sendDraft}>确定</button>
+              <button className="btn-ghost" title="粘贴到 claude 输入框，不自动回车（可再自行确认后回车）" onClick={() => sendDraft(false)}>插入不发送</button>
+              <button className="btn-primary" title="粘贴并回车，直接提交给 claude" onClick={() => sendDraft(true)}>直发 claude</button>
             </>
           }
         >
@@ -1372,10 +1379,13 @@ export default function TerminalView({
             value={draft}
             onChange={(e) => saveDraft(e.target.value)}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendDraft(); }
+              // Ctrl/Cmd+Enter → 直发 (paste + submit). Alt+Enter and plain Enter both insert a
+              // newline (Alt+Enter has no default newline, so we insert it ourselves). Esc closes.
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendDraft(true); }
+              else if (e.altKey && e.key === 'Enter') { e.preventDefault(); document.execCommand('insertText', false, '\n'); }
               else if (e.key === 'Escape') { e.preventDefault(); setEditorOpen(false); }
             }}
-            placeholder="在此编辑/粘贴多行长文本。点“确定”将作为一次粘贴送入终端（claude 不会逐行提交）。Cmd/Ctrl+Enter 确定，Esc 取消。"
+            placeholder="在此编辑/粘贴多行长文本。Ctrl/Cmd+Enter 直发 claude；Enter 或 Alt+Enter 换行；“插入不发送”只粘贴不回车；Esc 关闭。"
           />
         </FloatingPanel>
       )}
