@@ -22,19 +22,31 @@
 - **快捷命令 & 批量建窗**：常用命令一键 `send-keys` 注入；窗口名支持 `name[[1-5]]`，自动创建 `name1…name5`。
 - **数据存储**：本地 SQLite；可选自签名 HTTPS（启用局域网剪贴板）。
 
-## 一键运行（Docker）
+## 部署（原生，宿主机直接运行）
+
+> **本项目要求在宿主机上原生运行——不要用 Docker。** 网页终端里的 shell / tmux / 你启动的 `claude`
+> 都以运行本服务的系统用户身份执行，因此能直接复用你现成的 `~/.claude` 登录、访问整机文件——跑
+> Claude Code / Codex 这类代理正需要这点。放进容器则会把 tmux 与 claude 关在容器内：既看不到宿主
+> 项目、也没有你的 claude 凭证。
+
+**环境要求**：**Node 20**（`better-sqlite3` / `node-pty` 原生模块按 Node 20 ABI 编译，建议用 nvm 或官方包）、**tmux**、**git**。
 
 ```bash
-docker compose up -d --build
-docker compose logs | grep -A2 'Admin login'   # 查看首次生成的随机管理员密码
+# 1) 后端依赖（会编译原生模块）
+cd server && npm install
+
+# 2) 前端依赖 + 构建（服务端会直接托管 client/dist）
+cd ../client && npm install && npm run build
+
+# 3) 启动（首次启动把随机 admin 密码打印到日志）
+cd ../server && node src/server.js          # 默认 :6880
 ```
 
 访问 `http://<本机局域网IP>:6880`，用日志里打印的 `admin` 账号与随机密码登录（登录后可在“用户管理”里重置）。
-
 如需自定义账号密码，先 `cp .env.example .env` 填入 `ADMIN_PASSWORD`（及可选的 `JWT_SECRET`）再启动。
 
-> - 未设置 `JWT_SECRET` 时，应用会在首次启动自动生成并持久化一个随机密钥（`/app/server/data/.jwt_secret`），无需手动配置且重启不失效。
-> - 数据持久化在命名卷 `tmux-dash-data`（容器内 `/app/server/data`）。
+> 未设置 `JWT_SECRET` 时，应用首次启动会自动生成并持久化一个随机密钥（`server/data/.jwt_secret`），
+> 无需手动配置且重启不失效；数据默认落在 `server/data/`（SQLite）。
 
 ## 本地开发
 
@@ -46,20 +58,49 @@ cd server && npm install && JWT_SECRET=dev npm run dev   # :6880
 cd client && npm install && npm run dev                  # :5173，已配置 /api 与 /ws 代理
 ```
 
-## 本地常驻运行（macOS 原生，非 Docker）
+## 常驻运行（开机自启 / 崩溃重启）
 
-让服务在本机长期运行、并且**关闭 SSH 会话后继续存活**：用一个独立的 tmux 会话托管它（守护进程化，
-崩溃自动重启）。`<repo>` 换成仓库根目录。
+### Linux（systemd，推荐）
+
+```ini
+# /etc/systemd/system/tmux-dashboard.service —— <repo> / <你的用户名> 按实际替换
+[Unit]
+Description=tmux_claude_codex_dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=<你的用户名>
+WorkingDirectory=<repo>/server
+ExecStart=/usr/bin/env node src/server.js        # node 不在标准 PATH 时改用绝对路径（which node）
+Restart=always
+RestartSec=2
+# EnvironmentFile=<repo>/server/.env             # 可选：把 JWT_SECRET / ADMIN_PASSWORD 等写这里
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-# 启动（Node 20 必需：better-sqlite3 / node-pty 原生模块 ABI 对应 Node 20）
+sudo systemctl daemon-reload
+sudo systemctl enable --now tmux-dashboard
+journalctl -u tmux-dashboard -f            # 看日志（含首次生成的 admin 密码）
+sudo systemctl restart tmux-dashboard      # 改了 server/ 代码后重启生效；tmux 会话在独立 socket 上不受影响
+```
+
+### macOS（无 systemd）
+
+用一个独立 tmux 会话托管，**关闭 SSH 会话后仍存活**（崩溃自动重启）。`<repo>` 换成仓库根目录。
+
+```bash
+# Node 20 必需：better-sqlite3 / node-pty 原生模块 ABI 对应 Node 20
 tmux -L dashsvc new-session -d -s server \
   "cd <repo>/server && \
    export PATH='/opt/homebrew/opt/node@20/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin' && \
    while true; do node src/server.js; sleep 2; done"
 ```
 
-### 管理 & 开机自启
+### macOS 管理 & 开机自启
 
 - 看服务日志：`tmux -L dashsvc attach`（`Ctrl-b d` 退出查看，不会停服务）
 - 停服务：`tmux -L dashsvc kill-server`
@@ -126,5 +167,6 @@ session，业务窗口与其它观察者互不影响。
 
 ## 安全提示
 
-面向**可信局域网**设计。如需公网暴露，请置于 HTTPS 反向代理之后，使用强口令与强 `JWT_SECRET`，
-并注意：登录用户在容器内拥有等同容器用户的 shell 权限。
+面向**可信局域网**设计。**每个登录用户都会在宿主机上获得一个等同于「运行本服务的系统用户」的真实
+shell**——可读写该用户能碰的所有文件、并使用其 `~/.claude` 等凭证。请务必只给可信的人开账号，用强口令
+与强 `JWT_SECRET`；如需公网暴露，请置于 HTTPS 反向代理之后，并建议用一个专用的低权限系统用户来运行本服务。
