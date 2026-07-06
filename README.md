@@ -1,17 +1,26 @@
-# Tmux Dashboard
+# tmux_claude_codex_dashboard
 
-局域网内的轻量 tmux 控制台：账号登录后，在浏览器里以「分组 → 选项卡」的方式管理自己的 tmux 窗口，
-内置 xterm 终端、快捷命令、批量建窗（`web[[1-5]]`），关闭选项卡只转后台、不结束进程。
+浏览器里的多会话 tmux 控制台，为长时间运行的 CLI 编码代理（**Claude Code**、**Codex** 等）而生：
+账号登录后以「分组 → 选项卡」管理多个 tmux 会话/窗口，关闭选项卡只转后台、进程不断。内置 xterm 终端、
+剪贴板中转、文件预览、多行「直发」输入与移动端屏幕键盘——桌面与手机上都能顺手盯着代理跑。
+
+> A browser-based, multi-user tmux console for running & babysitting long-lived CLI coding agents
+> (Claude Code, Codex, …): groups → tabs over live terminals, with clipboard relay, file preview,
+> a direct-send composer and an on-screen keyboard — from desktop or phone.
 
 ## 功能
 
 - **账号登录**：JWT 鉴权，管理员预置 + 后台增删用户、重置密码。
-- **分组**：每个用户可建多个命名分组，一个分组对应一个 tmux session（`grp_<id>`，常驻后台）。
-- **选项卡 = tmux 窗口**：切换选项卡即切换窗口；关闭选项卡 → 转入「后台窗口」（窗口仍在运行），可恢复或彻底结束。
-- **批量建窗**：窗口名支持 `name[[1-5]]`（或 `name[[n]]`，默认 1–5），自动循环创建 `name1…name5`。
-- **真实终端**：xterm.js + WebSocket，可执行任意 shell 命令，不仅限 tmux。
-- **快捷命令**：保存常用命令，一键 `send-keys` 注入当前窗口。
-- **数据存储**：本地 SQLite。
+- **分组 / 选项卡**：每个用户可建多个命名分组（一个分组 = 一个常驻 tmux session `grp_<id>`）；切换选项卡即切换窗口，关闭选项卡 → 转「后台窗口」（进程仍在跑），可恢复或彻底结束；🕘 会话历史可一键 resume 此前的 claude 会话。
+- **真实终端**：xterm.js + WebSocket + node-pty，可跑任意 shell 命令；拖选即复制、滚轮照常滚动应用 / tmux 历史（无需切换鼠标模式），A+/A− 字号缩放，内置可选终端字体（修复 CJK / emoji 对齐）。
+- **剪贴板中转**：从原始输出流捕获终端 OSC 52 复制（含 claude `/copy`、选中即复制），浏览器拦截系统剪贴板也不丢；列表留存，一键回填 / 发送。
+- **文件预览**：复制一段文件路径（绝对路径，或相对代理运行目录），在剪贴板面板下方分栏只读预览，支持 Markdown 渲染与放大悬浮窗。
+- **多行输入 / 直发**：Ctrl+G 打开可拖动、可缩放的悬浮编辑器，作为一次粘贴送入，或「直发」直接提交给代理；草稿按选项卡自动保存。
+- **移动端**：屏幕键盘、单指拖选复制、点按不弹系统键盘，手机上也能盯着代理跑。
+- **Git 源代码管理**：右侧源码栏显示仓库改动 / 「落后远程」状态，内置 diff 查看与 commit / pull / push，操作后自动刷新。
+- **会话存档 / 可续接**：定期把每个窗口的终端文本快照落盘（只读），tmux 崩溃 / 误杀也留有记录；并清理继承的环境变量，让面板内启动的 claude 会话保留可 resume 的转录。
+- **快捷命令 & 批量建窗**：常用命令一键 `send-keys` 注入；窗口名支持 `name[[1-5]]`，自动创建 `name1…name5`。
+- **数据存储**：本地 SQLite；可选自签名 HTTPS（启用局域网剪贴板）。
 
 ## 一键运行（Docker）
 
