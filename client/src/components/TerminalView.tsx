@@ -271,6 +271,10 @@ export default function TerminalView({
   // Handler for OSC 52 clipboard writes arriving from the app (claude's copy). Assigned
   // below (needs setState); the terminal effect's clipboard provider calls through it.
   const onOsc52Ref = useRef<(text: string) => void>(() => {});
+  // The latest claude copy that couldn't reach the SYSTEM clipboard immediately (an OSC 52 arrives
+  // with no user activation, which browsers often block). Flushed on the next user gesture, where
+  // the clipboard write is permitted. Cleared by a manual copy so it can't clobber the user's own.
+  const pendingClipRef = useRef('');
   // Send raw bytes to the pty over the socket (used by the on-screen virtual keyboard and
   // the clipboard "发送"). Wired up inside the effect once the socket exists.
   const sendInputRef = useRef<(data: string) => boolean>(() => false);
@@ -372,9 +376,10 @@ export default function TerminalView({
     hintTimerRef.current = window.setTimeout(() => setHint(''), 2200);
   };
 
-  // An OSC 52 copy from the app (claude): append it to the clipboard relay list so it's never
-  // lost, and STILL attempt the system clipboard (best-effort — often blocked, since an OSC 52
-  // arrives in a WebSocket event with no user activation; the relay list is the reliable path).
+  // An OSC 52 copy from the app (claude): append it to the clipboard relay list so it's never lost,
+  // AND put it on the system clipboard. The immediate write is best-effort (an OSC 52 arrives in a
+  // WebSocket event with no user activation, which the browser often blocks); when it's blocked the
+  // text is held in pendingClipRef and flushed to the system clipboard on the next user gesture.
   onOsc52Ref.current = (text: string) => {
     if (!text) return;
     setClips((prev) => {
@@ -383,7 +388,10 @@ export default function TerminalView({
       saveClips(gid, windowName, next);
       return next;
     });
-    copyText(text).then((ok) => showHintRef.current(ok ? '已复制并存入剪贴板' : '已存入剪贴板（点按钮查看）'));
+    copyText(text).then((ok) => {
+      if (ok) { pendingClipRef.current = ''; showHintRef.current('已复制到系统剪贴板并存入中转'); }
+      else { pendingClipRef.current = text; showHintRef.current('已存入中转 · 点一下终端即写入系统剪贴板'); }
+    });
   };
 
   function saveDraft(v: string) {
@@ -559,7 +567,7 @@ export default function TerminalView({
       // DevTools). Claude's own select-to-copy arrives via OSC 52 (handled separately).
       const isCopy = e.metaKey && (e.key === 'c' || e.key === 'C');
       if (isCopy && term.hasSelection()) {
-        if (e.type === 'keydown') { e.preventDefault(); copyText(term.getSelection()); }
+        if (e.type === 'keydown') { e.preventDefault(); copyText(term.getSelection()); pendingClipRef.current = ''; }
         return false;
       }
       // Paste: Ctrl/Cmd+Shift+V reads the clipboard and pastes (bracketed) into the app.
@@ -590,9 +598,23 @@ export default function TerminalView({
     const el = ref.current;
     const onMouseUp = () => {
       const sel = term.getSelection();
-      if (sel) copyText(sel);
+      if (sel) { copyText(sel); pendingClipRef.current = ''; } // a manual copy supersedes a pending claude one
     };
     el?.addEventListener('mouseup', onMouseUp);
+
+    // Flush a claude copy that the browser blocked from the system clipboard: the next user gesture
+    // (a click or keypress, anywhere) supplies the activation the write needs. Cheap no-op when
+    // nothing is pending. Passive — never preventDefault/stopPropagation, so it's transparent.
+    const flushPendingClip = () => {
+      const t = pendingClipRef.current;
+      if (!t) return;
+      pendingClipRef.current = '';
+      copyText(t).then((ok) => { if (ok) showHintRef.current('已写入系统剪贴板'); else pendingClipRef.current = t; });
+    };
+    window.addEventListener('pointerdown', flushPendingClip, true);
+    window.addEventListener('keydown', flushPendingClip, true);
+    window.addEventListener('wheel', flushPendingClip, { capture: true, passive: true });
+    window.addEventListener('focus', flushPendingClip, true); // returning to the tab (Chrome allows a focused write)
 
     // Image intake via a context-menu paste or a drag-drop onto the terminal (Ctrl+V / Ctrl+Shift+V
     // go through the key handler's tryClipboardImage instead). Text paste/drag is left untouched.
@@ -797,6 +819,7 @@ export default function TerminalView({
       if (sel) {
         e.preventDefault(); // swallow the synthesized click so it doesn't clear the selection / pop the keyboard
         copyText(sel);
+        pendingClipRef.current = '';
         showHintRef.current('已复制所选文字');
       }
     };
@@ -928,6 +951,10 @@ export default function TerminalView({
       ro.disconnect();
       dataSub.dispose();
       el?.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('pointerdown', flushPendingClip, true);
+      window.removeEventListener('keydown', flushPendingClip, true);
+      window.removeEventListener('wheel', flushPendingClip, true);
+      window.removeEventListener('focus', flushPendingClip, true);
       el?.removeEventListener('paste', onPasteEvt, true);
       el?.removeEventListener('dragover', onDragOverEvt);
       el?.removeEventListener('drop', onDropEvt);
