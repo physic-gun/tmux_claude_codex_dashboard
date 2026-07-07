@@ -271,9 +271,17 @@ input { font-family: inherit; }
    right-middle scroll rail so they don't collide. */
 .cli-fab {
   position: absolute; right: 8px; bottom: 12px; z-index: 8;
-  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  /* Horizontal row (not a tall vertical stack) so the buttons hug the bottom-right corner and
+     don't cover the app's input line up the right edge. */
+  display: flex; flex-direction: row; gap: 8px; align-items: flex-end;
   touch-action: none;
+  /* Same settings-controlled resting opacity as the scroll rail / SCM reopen; full on hover,
+     focus, or while one of its panels is open. */
+  opacity: var(--float-opacity); transition: opacity 0.15s;
 }
+.cli-fab:hover, .cli-fab:focus-within { opacity: 1; }
+/* Kept in its own rule so browsers without :has() still apply the hover/focus rule above. */
+.cli-fab:has(.cli-fab-btn.on) { opacity: 1; }
 .cli-fab-btn {
   position: relative;
   min-width: 46px; height: 40px; padding: 0 10px;
@@ -866,3 +874,85 @@ kbd {
   padding: 10px 12px; font-family: Menlo, Monaco, Consolas, monospace; font-size: 12px;
   white-space: pre; overflow: auto; outline: none;
 }
+
+/* ---------- file explorer (📁 floating file manager) ---------- */
+/* Hosted in a FloatingPanel; opts its body out of the default padding/scroll so the explorer
+   manages its own toolbar / scrolling list / preview split / footer regions. */
+.float-panel-body.fx-body { padding: 0; overflow: hidden; }
+.fx-title { font-size: 13px; }
+.fx-root { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.fx-nav { display: flex; align-items: center; gap: 6px; padding: 10px 10px 0; }
+.fx-ibtn {
+  flex-shrink: 0; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 5px 9px; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.fx-ibtn:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+.fx-ibtn:disabled { opacity: 0.4; cursor: default; }
+.fx-ibtn.on { border-color: var(--accent); color: var(--accent); }
+.fx-addr, .fx-filter {
+  flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); padding: 6px 10px; font-size: 12.5px; outline: none;
+  font-family: Menlo, Monaco, Consolas, monospace;
+}
+.fx-addr:focus, .fx-filter:focus { border-color: var(--accent); }
+
+.fx-crumbs {
+  display: flex; align-items: center; flex-wrap: nowrap; overflow-x: auto;
+  padding: 6px 10px 2px; font-size: 12px; color: var(--muted); scrollbar-width: thin;
+}
+.fx-crumb {
+  background: none; border: none; color: var(--accent); padding: 1px 4px; font-size: 12px;
+  cursor: pointer; white-space: nowrap; border-radius: 4px;
+}
+.fx-crumb:hover { background: var(--panel-2); text-decoration: underline; }
+.fx-crumb-sep { color: var(--muted); opacity: 0.6; }
+
+.fx-tools { display: flex; align-items: center; gap: 6px; padding: 2px 10px 8px; border-bottom: 1px solid var(--border); }
+.fx-sort { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 5px 6px; font-size: 12px; }
+.fx-tools-gap { flex: 1; }
+.fx-error { color: var(--danger); font-size: 12px; padding: 6px 10px 0; }
+
+.fx-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px; }
+.fx-list:focus { outline: none; }
+.fx-list.drop { outline: 2px dashed var(--accent); outline-offset: -4px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.fx-row {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px;
+  cursor: default; user-select: none;
+}
+.fx-row:hover { background: var(--panel-2); }
+.fx-row.active { background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--accent); }
+.fx-row.broken { opacity: 0.6; }
+.fx-icon { width: 20px; flex-shrink: 0; text-align: center; }
+.fx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.fx-link { margin-left: 4px; color: var(--accent); font-size: 11px; }
+.fx-size { flex-shrink: 0; width: 66px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fx-time { flex-shrink: 0; width: 92px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fx-actions { flex-shrink: 0; display: flex; gap: 2px; opacity: 0; }
+.fx-row:hover .fx-actions, .fx-row.active .fx-actions { opacity: 1; }
+.fx-act {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  border-radius: 6px; padding: 2px 6px; font-size: 12px; line-height: 1; cursor: pointer;
+}
+.fx-act:hover { border-color: var(--accent); color: #fff; background: var(--panel); }
+.fx-act.danger:hover { border-color: var(--danger); color: #fff; }
+.fx-inline-input {
+  flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--accent);
+  border-radius: 6px; color: var(--text); padding: 3px 8px; font-size: 13px; outline: none;
+}
+.fx-creating { padding: 5px 8px; }
+.fx-empty { padding: 16px 10px; text-align: center; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+
+.fx-preview { display: flex; flex-direction: column; flex: 0 1 42%; min-height: 100px; border-top: 1px solid var(--border); background: var(--panel); }
+.fx-preview-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.fx-preview-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); font-family: Menlo, Monaco, Consolas, monospace; }
+.fx-preview-actions { flex-shrink: 0; display: flex; gap: 4px; }
+
+.fx-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.fx-foot-count { white-space: nowrap; }
+.fx-foot-btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.fx-foot-btn:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+.fx-foot-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Touch: row actions can't rely on hover, so keep them visible. */
+@media (pointer: coarse) { .fx-actions { opacity: 1; } }

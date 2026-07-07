@@ -152,9 +152,18 @@ export function readFileForView(resolved) {
   } catch (e) {
     return { exists: true, isFile: true, error: String(e?.message || e) };
   }
-  // Binary sniff: a NUL byte in the sampled head ⇒ treat as binary (don't ship raw bytes).
+  // Text sniff over the sampled head (memory stays bounded — buf is already capped at MAX_VIEW_BYTES).
+  // Treat as binary — and withhold the bytes so they don't render as 乱码 — when we see a NUL byte, or
+  // when >10% of the sample is non-text control bytes (anything outside tab/newline/CR and the
+  // printable range). UTF-8 lead/continuation bytes are ≥0x80, so this keeps CJK/UTF-8 text as text.
   const sample = buf.subarray(0, Math.min(buf.length, 8192));
-  if (sample.includes(0)) return { exists: true, isFile: true, binary: true, size: st.size };
+  let ctrl = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const b = sample[i];
+    if (b === 0) return { exists: true, isFile: true, binary: true, size: st.size };
+    if (b < 9 || (b > 13 && b < 32) || b === 127) ctrl++; // control chars except \t \n \r
+  }
+  if (sample.length && ctrl / sample.length > 0.1) return { exists: true, isFile: true, binary: true, size: st.size };
   return { exists: true, isFile: true, size: st.size, content: buf.toString('utf8'), truncated };
 }
 
@@ -194,4 +203,141 @@ export function completePath(p) {
   const matches = names.map((n) => path.join(dir, n));
   const common = names.length ? path.join(dir, longestCommonPrefix(names)) : raw;
   return { matches, common };
+}
+
+// ── File explorer: directory listing + write operations ───────────────────────────────────────
+// The explorer lets a logged-in user browse/manage host files from the panel. Same trust model as
+// the read-only preview above: any authenticated user can already open a full shell in their
+// windows, so file access here grants nothing new — but every mutation is still guarded (no root /
+// $HOME deletion, uploaded names are basename-only, renames never clobber) against accidents.
+const MAX_DIR_ENTRIES = 5000; // cap so a huge dir (e.g. node_modules) can't blow up the response / DOM
+
+// List a directory's immediate children with light metadata for the explorer. Never throws —
+// returns { ok:false, error } on failure. `stat` follows symlinks so a link to a dir acts as a
+// dir; a dangling link is kept and flagged `broken`. Dotfiles are included only when showHidden.
+// Entries are capped at MAX_DIR_ENTRIES with a `truncated` flag.
+export function listDir(resolvedDir, showHidden = false) {
+  let st;
+  try { st = fs.statSync(resolvedDir); } catch { return { ok: false, error: '无法访问该目录' }; }
+  if (!st.isDirectory()) return { ok: false, error: '该路径不是文件夹' };
+  let dirents;
+  try { dirents = fs.readdirSync(resolvedDir, { withFileTypes: true }); }
+  catch (e) { return { ok: false, error: `无法读取目录：${e?.message || e}` }; }
+  const all = showHidden ? dirents : dirents.filter((d) => !d.name.startsWith('.'));
+  const truncated = all.length > MAX_DIR_ENTRIES;
+  const slice = truncated ? all.slice(0, MAX_DIR_ENTRIES) : all;
+  const entries = slice.map((d) => {
+    const full = path.join(resolvedDir, d.name);
+    const isSymlink = d.isSymbolicLink();
+    let isDir = d.isDirectory();
+    let isFile = d.isFile();
+    let size = 0, mtimeMs = 0, broken = false;
+    try {
+      const s = fs.statSync(full); // follows the link, so a link → dir sorts/acts as a dir
+      isDir = s.isDirectory(); isFile = s.isFile(); size = s.size; mtimeMs = s.mtimeMs;
+    } catch {
+      broken = isSymlink;                                   // dangling symlink: keep it, flagged
+      try { mtimeMs = fs.lstatSync(full).mtimeMs; } catch { /* gone between readdir and lstat */ }
+    }
+    return { name: d.name, isDir, isFile, isSymlink, broken, size, mtimeMs };
+  });
+  const parent = path.dirname(resolvedDir);
+  return { ok: true, path: resolvedDir, parent: parent === resolvedDir ? null : parent, truncated, entries };
+}
+
+// Create a directory (mkdir -p for the parent chain). Refuses when the leaf already exists —
+// mkdir -p is idempotent, so without this an existing dir reports a misleading "created". { ok } | { error }.
+export function makeDir(resolved) {
+  if (fs.existsSync(resolved)) return { error: '同名文件/文件夹已存在' };
+  try { fs.mkdirSync(resolved, { recursive: true }); return { ok: true }; }
+  catch (e) { return { error: `无法创建文件夹：${e?.message || e}` }; }
+}
+
+// Create an empty file; refuses to clobber an existing path (flag 'wx'). Parent dirs are created.
+export function makeFile(resolved) {
+  try { fs.mkdirSync(path.dirname(resolved), { recursive: true }); } catch { /* report the write error below */ }
+  try { fs.writeFileSync(resolved, '', { flag: 'wx' }); return { ok: true }; }
+  catch (e) {
+    if (e?.code === 'EEXIST') return { error: '同名文件已存在' };
+    return { error: `无法创建文件：${e?.message || e}` };
+  }
+}
+
+// Rename/move a path; refuses to overwrite an existing destination. { ok } | { error }.
+export function renamePath(from, to) {
+  if (fs.existsSync(to)) return { error: '目标已存在，未覆盖' };
+  try { fs.renameSync(from, to); return { ok: true }; }
+  catch (e) {
+    if (e?.code === 'EXDEV') return { error: '跨设备移动暂不支持（请在终端用 mv）' };
+    return { error: `重命名失败：${e?.message || e}` };
+  }
+}
+
+// Delete a file/dir. Guards against the filesystem root and the user's home dir (accidental
+// catastrophe); a symlink is unlinked itself (never followed). Dirs are removed recursively.
+export function removePath(resolved) {
+  const p = path.resolve(resolved);
+  if (p === path.parse(p).root) return { error: '拒绝删除根目录' };
+  if (p === os.homedir()) return { error: '拒绝删除用户主目录' };
+  let ls;
+  try { ls = fs.lstatSync(p); } catch { return { error: '路径不存在' }; }
+  try {
+    if (ls.isDirectory()) fs.rmSync(p, { recursive: true, force: true }); // real dir (not a symlink)
+    else fs.unlinkSync(p);                                                // file or symlink → unlink the link
+    return { ok: true };
+  } catch (e) { return { error: `删除失败：${e?.message || e}` }; }
+}
+
+// Write uploaded bytes to <dir>/<basename(name)>. The basename strips any path components in the
+// client-supplied name, so an upload can't escape the target dir. Refuses to overwrite unless
+// `overwrite`. { ok, path } | { error, exists? }.
+export function writeUpload(resolvedDir, name, buf, overwrite = false) {
+  const safeName = path.basename(String(name || '')).trim();
+  if (!safeName || safeName === '.' || safeName === '..') return { error: '文件名无效' };
+  let dirStat;
+  try { dirStat = fs.statSync(resolvedDir); } catch { return { error: '目标目录不存在' }; }
+  if (!dirStat.isDirectory()) return { error: '目标不是文件夹' };
+  const dest = path.join(resolvedDir, safeName);
+  try {
+    fs.writeFileSync(dest, buf, { flag: overwrite ? 'w' : 'wx' });
+    return { ok: true, path: dest };
+  } catch (e) {
+    if (e?.code === 'EEXIST') return { error: '同名文件已存在（可选择覆盖）', exists: true };
+    return { error: `写入失败：${e?.message || e}` };
+  }
+}
+
+// ── Pasted / dropped image intake ──────────────────────────────────────────────────────────────
+// claude reads images by file PATH (there's no OS clipboard on a headless server), so a browser-
+// pasted image is written to a server temp file whose absolute path is injected into the pane;
+// claude then auto-attaches the .png/.jpg/.gif/.webp it finds in the prompt. Files land in one temp
+// dir and stale ones are pruned so it can't grow without bound. Only known raster types are accepted.
+const PASTE_IMAGE_DIR = path.join(os.tmpdir(), 'tmux-dashboard-images');
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024; // matches claude's per-image ceiling
+
+// Best-effort: drop paste images older than a day so the temp dir stays small.
+function prunePasteImages() {
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  let names;
+  try { names = fs.readdirSync(PASTE_IMAGE_DIR); } catch { return; }
+  for (const n of names) {
+    if (!n.startsWith('paste-')) continue;
+    const p = path.join(PASTE_IMAGE_DIR, n);
+    try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* raced away — ignore */ }
+  }
+}
+
+// Write image bytes to a fresh temp file; returns { ok, path } (absolute) or { error }.
+export function writePasteImage(ext, buf) {
+  const e = IMAGE_EXTS.has(String(ext || '').toLowerCase()) ? String(ext).toLowerCase() : 'png';
+  if (!buf || !buf.length) return { error: '空图片数据' };
+  if (buf.length > MAX_IMAGE_BYTES) return { error: '图片过大（>32MB）' };
+  try { fs.mkdirSync(PASTE_IMAGE_DIR, { recursive: true }); }
+  catch (err) { return { error: `无法创建临时目录：${err?.message || err}` }; }
+  prunePasteImages();
+  const name = `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${e}`;
+  const dest = path.join(PASTE_IMAGE_DIR, name);
+  try { fs.writeFileSync(dest, buf); return { ok: true, path: dest }; }
+  catch (err) { return { error: `写入失败：${err?.message || err}` }; }
 }

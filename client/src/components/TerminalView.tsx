@@ -1,46 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode, type TouchEvent as ReactTouchEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type TouchEvent as ReactTouchEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
-import { getToken, api } from '../api';
-
-// Copy text to the clipboard, reporting whether it actually landed. navigator.clipboard
-// only works in a secure context (https or localhost) AND — outside a user gesture — only
-// when the browser feels like it (e.g. document focused); on a plain LAN http origin we
-// fall back to execCommand, which itself only succeeds inside a user gesture. Callers use
-// the returned flag to surface a manual-copy fallback instead of losing the text.
-async function copyText(text: string): Promise<boolean> {
-  if (!text) return false;
-  try {
-    if (window.isSecureContext && navigator.clipboard) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    /* fall through */
-  }
-  try {
-    // Remember focus (usually the xterm helper textarea) and restore it after, so a
-    // copy doesn't silently steal keyboard focus from the terminal.
-    const prev = document.activeElement as HTMLElement | null;
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    prev?.focus?.();
-    return ok;
-  } catch {
-    return false; /* clipboard unavailable */
-  }
-}
+import { getToken, api, postRaw } from '../api';
+import { copyText } from '../lib/clipboard';
+import { filePathCandidate, isMarkdownPath, fmtSize, renderMarkdown, type FileView } from '../lib/fileview';
+import FloatingPanel from './FloatingPanel';
+import FileExplorer from './FileExplorer';
 
 // ── Clipboard relay store ───────────────────────────────────────────────────────────────────
 // The app's OSC 52 copies are kept in an in-app list (the reliable "剪贴板中转"), per terminal
@@ -113,120 +82,6 @@ function extractOsc52(chunk: string, carry: string): { texts: string[]; carry: s
   return { texts, carry: outCarry };
 }
 
-// ── Clipboard file preview ────────────────────────────────────────────────────────────────────
-// Derive a single file-path candidate from copied text, so a clip that is just a path can be
-// previewed. Only single-line text is considered; one layer of wrapping quotes/backticks is
-// stripped, and a trailing :line[:col] reference (as in claude's `src/foo.ts:42`) is dropped.
-// Returns '' when the text doesn't look like a path, so we never probe the server for prose.
-function filePathCandidate(text: string): string {
-  let s = (text || '').trim();
-  if (!s || s.length > 4096 || /[\n\r\t]/.test(s)) return '';
-  const wrapped = s.match(/^([`'"])([\s\S]*)\1$/); // strip one layer of matching quotes/backticks
-  if (wrapped) s = wrapped[2].trim();
-  s = s.replace(/:(\d+)(:\d+)?$/, ''); // drop a trailing path:line[:col] reference
-  if (!s || /[\x00-\x1f]/.test(s)) return '';
-  // Must plausibly be a path: has a slash, starts with ~ or ./ ../, or is a bare filename.ext.
-  const looksPath =
-    s.includes('/') || /^~/.test(s) || /^\.\.?\//.test(s) || /^[\w.@+-]+\.[\w]{1,12}$/.test(s);
-  return looksPath ? s : '';
-}
-
-const MARKDOWN_RE = /\.(md|markdown|mdx|mkd)$/i;
-const isMarkdownPath = (p: string) => MARKDOWN_RE.test(p || '');
-
-// Human-readable byte size for the preview header / notes.
-function fmtSize(n?: number): string {
-  if (!n && n !== 0) return '';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-// Minimal, dependency-free, XSS-safe Markdown → HTML for the read-only preview. Everything is
-// HTML-escaped FIRST, then a fixed, whitelisted set of tags is introduced; link hrefs are
-// scheme-checked so a `javascript:` URL can't sneak through. Not a full CommonMark implementation —
-// just enough (headings, code, lists, quotes, emphasis, links, rules) to read a file comfortably.
-function escHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'
-  );
-}
-// Inline spans over already-escaped text: `code`, links, **bold**/__bold__, *italic*/_italic_.
-// Emitted tags (code spans, and each <a…>/</a>) are stashed behind NUL sentinels BEFORE the
-// emphasis passes, so a * or _ inside a URL/href can't bleed into the generated markup; the
-// link LABEL is left in place so emphasis still applies to it. Sentinels are restored at the end.
-function mdInline(escaped: string): string {
-  const tokens: string[] = [];
-  const stash = (html: string) => `\x00${tokens.push(html) - 1}\x00`;
-  let s = escaped.replace(/`([^`]+)`/g, (_m, c) => stash(`<code>${c}</code>`));
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => {
-    const ok = /^(https?:\/\/|mailto:|\/|\.{0,2}\/|#)/i.test(url) || /^[\w.-]+\//.test(url);
-    return ok ? stash(`<a href="${url}" target="_blank" rel="noopener noreferrer">`) + label + stash('</a>') : label;
-  });
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  s = s.replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>');
-  return s.replace(/\x00(\d+)\x00/g, (_m, i) => tokens[Number(i)]);
-}
-function renderMarkdown(src: string): string {
-  const lines = (src || '').replace(/\r\n?/g, '\n').split('\n');
-  const out: string[] = [];
-  let para: string[] = [];
-  let listType: 'ul' | 'ol' | null = null;
-  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(escHtml(para.join(' ')))}</p>`); para = []; } };
-  const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
-  for (let i = 0; i < lines.length; ) {
-    const line = lines[i];
-    const fence = line.match(/^\s*(```+|~~~+)/); // fenced code block
-    if (fence) {
-      flushPara(); closeList();
-      const close = fence[1][0] === '`' ? /^\s*```+/ : /^\s*~~~+/;
-      const buf: string[] = [];
-      i++;
-      while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
-      i++; // skip the closing fence
-      out.push(`<pre class="md-code"><code>${escHtml(buf.join('\n'))}</code></pre>`);
-      continue;
-    }
-    if (/^\s*$/.test(line)) { flushPara(); closeList(); i++; continue; }
-    const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
-    if (h) { flushPara(); closeList(); out.push(`<h${h[1].length}>${mdInline(escHtml(h[2]))}</h${h[1].length}>`); i++; continue; }
-    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push('<hr />'); i++; continue; }
-    const bq = line.match(/^\s{0,3}>\s?(.*)$/);
-    if (bq) {
-      flushPara(); closeList();
-      const buf: string[] = [bq[1]];
-      i++;
-      while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s{0,3}>\s?/, ''));
-      out.push(`<blockquote>${mdInline(escHtml(buf.join(' ')))}</blockquote>`);
-      continue;
-    }
-    const ul = line.match(/^\s{0,3}[-*+]\s+(.*)$/);
-    const ol = line.match(/^\s{0,3}\d+[.)]\s+(.*)$/);
-    if (ul || ol) {
-      flushPara();
-      const t: 'ul' | 'ol' = ul ? 'ul' : 'ol';
-      if (listType && listType !== t) closeList();
-      if (!listType) { listType = t; out.push(`<${t}>`); }
-      out.push(`<li>${mdInline(escHtml(ul ? ul[1] : ol![1]))}</li>`);
-      i++; continue;
-    }
-    para.push(line.trim());
-    i++;
-  }
-  flushPara(); closeList();
-  return out.join('\n');
-}
-
-// The result of probing a clip's text against the filesystem (see the detect effect).
-type FileView =
-  | { status: 'idle' | 'none' | 'loading' }
-  | { status: 'error'; error: string }
-  | {
-      status: 'ok'; path: string; base?: string | null;
-      size?: number; content?: string; truncated?: boolean; binary?: boolean; isFile?: boolean;
-    };
-
 // Apps like claude turn on mouse reporting (1000/1002/1003 + SGR 1006) to grab both drags
 // and the wheel. We ALWAYS strip the enable sequences before xterm sees them, so a plain
 // drag does a local text selection (copy-on-select) instead of being forwarded to the app.
@@ -251,92 +106,6 @@ const DEFAULT_TERM_FONT =
 function composeFont(name?: string) {
   const n = (name || '').trim();
   return n ? `"${n}", ${DEFAULT_TERM_FONT}` : DEFAULT_TERM_FONT;
-}
-
-// ── Floating, draggable, resizable panel ────────────────────────────────────────────────────
-// A non-blocking window (no backdrop, so the CLI behind stays scrollable/usable): drag by its
-// title bar, resize from the bottom-right grip, position + size persisted per storageKey and
-// clamped into the viewport. Used for the Ctrl+G editor and the clipboard editor, which can
-// therefore coexist. (They auto-close on tab/group switch because TerminalView remounts then.)
-type Rect = { x: number; y: number; w: number; h: number };
-const PANEL_MIN_W = 300;
-const PANEL_MIN_H = 170;
-function clampRect(r: Rect): Rect {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const w = Math.max(PANEL_MIN_W, Math.min(r.w, vw - 16));
-  const h = Math.max(PANEL_MIN_H, Math.min(r.h, vh - 16));
-  const x = Math.max(8, Math.min(r.x, Math.max(8, vw - w - 8)));
-  const y = Math.max(8, Math.min(r.y, Math.max(8, vh - h - 8)));
-  return { x, y, w, h };
-}
-function loadRect(key: string): Rect | null {
-  try {
-    const r = JSON.parse(localStorage.getItem(key) || 'null');
-    if (r && ['x', 'y', 'w', 'h'].every((k) => typeof r[k] === 'number')) return r;
-  } catch { /* ignore */ }
-  return null;
-}
-
-function FloatingPanel({
-  title, storageKey, defaultSize, defaultOffset = 0, footer, onClose, children,
-}: {
-  title: string;
-  storageKey: string;
-  defaultSize: { w: number; h: number };
-  defaultOffset?: number;
-  footer?: ReactNode;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const [rect, setRect] = useState<Rect>(() => {
-    const saved = loadRect(storageKey);
-    if (saved) return clampRect(saved);
-    const vw = window.innerWidth;
-    const w = Math.min(defaultSize.w, vw - 24);
-    const h = Math.min(defaultSize.h, window.innerHeight - 24);
-    return clampRect({ w, h, x: (vw - w) / 2 + defaultOffset, y: 64 + defaultOffset });
-  });
-  const rectRef = useRef(rect);
-  rectRef.current = rect;
-  const persist = () => { try { localStorage.setItem(storageKey, JSON.stringify(rectRef.current)); } catch { /* ignore */ } };
-
-  // Shared pointer-drag driver for both the title-bar move and the corner resize.
-  const startGesture = (e: ReactPointerEvent, apply: (r0: Rect, dx: number, dy: number) => Rect) => {
-    e.preventDefault();
-    const sx = e.clientX;
-    const sy = e.clientY;
-    const r0 = rectRef.current;
-    const move = (ev: PointerEvent) => setRect(clampRect(apply(r0, ev.clientX - sx, ev.clientY - sy)));
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      persist();
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-  const startDrag = (e: ReactPointerEvent) => startGesture(e, (r0, dx, dy) => ({ ...r0, x: r0.x + dx, y: r0.y + dy }));
-  const startResize = (e: ReactPointerEvent) => { e.stopPropagation(); startGesture(e, (r0, dx, dy) => ({ ...r0, w: r0.w + dx, h: r0.h + dy })); };
-
-  // Keep the panel on-screen if the browser window is resized.
-  useEffect(() => {
-    const onResize = () => setRect((r) => clampRect(r));
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-
-  return (
-    <div className="float-panel" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
-      <div className="float-panel-bar" onPointerDown={startDrag}>
-        <span className="float-panel-title">{title}</span>
-        <button className="float-panel-x" title="关闭" onPointerDown={(e) => e.stopPropagation()} onClick={onClose}>×</button>
-      </div>
-      <div className="float-panel-body">{children}</div>
-      {footer && <div className="float-panel-footer">{footer}</div>}
-      <div className="float-panel-resize" title="拖动改变大小" onPointerDown={startResize} />
-    </div>
-  );
 }
 
 // ── On-screen English keyboard (mobile) ─────────────────────────────────────────────────────
@@ -533,6 +302,8 @@ export default function TerminalView({
   const lastFilePathRef = useRef<string | null>(null);
   // On-screen English keyboard (mobile): docked at the CLI bottom, keys sent live to the pty.
   const [kbdOpen, setKbdOpen] = useState(false);
+  // Floating file explorer (📁 FAB): browse/manage host files, anchored to this pane's cwd.
+  const [explorerOpen, setExplorerOpen] = useState(false);
   const draftKey = `tmuxdash:draft:${gid}:${windowName}`;
 
   // ── Overlay dismissal ──────────────────────────────────────────────────────────────────────
@@ -546,11 +317,13 @@ export default function TerminalView({
     clipEdit: () => setClipEdit(null),
     fileZoom: () => setFileZoom(false),
     editor: () => setEditorOpen(false),
+    explorer: () => setExplorerOpen(false),
   };
   useOverlayStack(overlayStackRef, 'clipList', clipListOpen);
   useOverlayStack(overlayStackRef, 'clipEdit', clipEdit != null);
   useOverlayStack(overlayStackRef, 'fileZoom', fileZoom);
   useOverlayStack(overlayStackRef, 'editor', editorOpen);
+  useOverlayStack(overlayStackRef, 'explorer', explorerOpen);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
@@ -726,6 +499,56 @@ export default function TerminalView({
 
     try { fit.fit(); } catch {}
 
+    // ── Image input (paste / drag-drop) ──────────────────────────────────────────────────────
+    // claude has no OS clipboard on the server, so it can't take a pasted image directly. Instead we
+    // upload the image bytes to a server temp file and inject its absolute path into the pane as a
+    // bracketed paste (no Enter). claude auto-detects .png/.jpg/.gif/.webp paths in the prompt and
+    // attaches the image — the user can add a note, then press Enter. Reached from Ctrl+V /
+    // Ctrl+Shift+V / Cmd+V (async clipboard API) and from a drag-drop / context-menu paste.
+    const IMAGE_MIME_EXT: Record<string, string> = {
+      'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+    };
+    const uploadImage = async (blob: Blob) => {
+      if (blob.size > 32 * 1024 * 1024) { showHintRef.current('图片过大（>32MB），未上传'); return; }
+      const ext = IMAGE_MIME_EXT[blob.type] || 'png';
+      showHintRef.current('图片上传中…');
+      try {
+        const r = await postRaw(`/fs/paste-image?gid=${gid}&window=${encodeURIComponent(windowName)}&ext=${ext}`, blob);
+        if (r?.path) {
+          sendInputRef.current('\x1b[200~' + r.path + ' \x1b[201~'); // trailing space so a prompt won't glue on
+          showHintRef.current('图片已插入路径，可补充说明后回车发给 claude');
+        } else showHintRef.current('图片上传失败');
+      } catch (err) { showHintRef.current('图片上传失败：' + (err as Error).message); }
+    };
+    // Pull image blobs out of a clipboard / drag payload (items first, then files).
+    const imagesFrom = (dt: DataTransfer | null): Blob[] => {
+      const out: Blob[] = [];
+      if (!dt) return out;
+      for (const it of Array.from(dt.items || [])) {
+        if (it.kind === 'file' && it.type.startsWith('image/')) { const f = it.getAsFile(); if (f) out.push(f); }
+      }
+      if (!out.length) for (const f of Array.from(dt.files || [])) if (f.type.startsWith('image/')) out.push(f);
+      return out;
+    };
+    // Ctrl+V/Ctrl+Shift+V path: try the async clipboard for an image. Returns true if it uploaded
+    // one, so the caller can otherwise fall back to text paste / the nudge.
+    const tryClipboardImage = async (): Promise<boolean> => {
+      try {
+        if (!navigator.clipboard?.read) return false;
+        const items = await navigator.clipboard.read();
+        for (const it of items) {
+          const t = it.types.find((x) => x.startsWith('image/'));
+          if (t) { await uploadImage(await it.getType(t)); return true; }
+        }
+      } catch { /* unavailable / denied → caller falls back */ }
+      return false;
+    };
+    const readTextAndPaste = () => {
+      navigator.clipboard?.readText?.()
+        .then((text) => { if (text) termRef.current?.paste(text); })
+        .catch(() => showHintRef.current('无法读取剪贴板（需 https/已授权）'));
+    };
+
     // Intercept Ctrl+G (multi-line editor), Cmd/Ctrl+Shift+C (copy), and paste shortcuts.
     term.attachCustomKeyEventHandler((e) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'g' || e.key === 'G')) {
@@ -744,15 +567,17 @@ export default function TerminalView({
       if (isPaste) {
         if (e.type === 'keydown') {
           e.preventDefault();
-          navigator.clipboard?.readText?.()
-            .then((text) => { if (text) termRef.current?.paste(text); })
-            .catch(() => showHintRef.current('无法读取剪贴板（需 https/已授权）'));
+          // An image in the clipboard is uploaded + injected; otherwise fall back to text paste.
+          tryClipboardImage().then((did) => { if (!did) readTextAndPaste(); });
         }
         return false;
       }
-      // Plain Ctrl+V doesn't paste here (it sends ^V to the app) — nudge to Ctrl+Shift+V.
+      // Plain Ctrl+V: paste a clipboard image if present; otherwise nudge to Ctrl+Shift+V for text.
       if (e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-        if (e.type === 'keydown') { e.preventDefault(); showHintRef.current('粘贴请用 Ctrl+Shift+V'); }
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          tryClipboardImage().then((did) => { if (!did) showHintRef.current('粘贴请用 Ctrl+Shift+V'); });
+        }
         return false;
       }
       return true;
@@ -768,6 +593,28 @@ export default function TerminalView({
       if (sel) copyText(sel);
     };
     el?.addEventListener('mouseup', onMouseUp);
+
+    // Image intake via a context-menu paste or a drag-drop onto the terminal (Ctrl+V / Ctrl+Shift+V
+    // go through the key handler's tryClipboardImage instead). Text paste/drag is left untouched.
+    const onPasteEvt = (e: ClipboardEvent) => {
+      const imgs = imagesFrom(e.clipboardData);
+      if (imgs.length) { e.preventDefault(); e.stopPropagation(); imgs.forEach((b) => uploadImage(b)); }
+    };
+    const onDragOverEvt = (e: DragEvent) => {
+      if (e.dataTransfer && Array.from(e.dataTransfer.items || []).some((i) => i.kind === 'file')) e.preventDefault();
+    };
+    const onDropEvt = (e: DragEvent) => {
+      const dt = e.dataTransfer;
+      const hasFiles = !!dt && (Array.from(dt.items || []).some((i) => i.kind === 'file') || (dt.files?.length ?? 0) > 0);
+      if (!hasFiles) return;                       // not a file drop → leave text/other drops alone
+      e.preventDefault(); e.stopPropagation();     // stop the browser from navigating to the dropped file
+      const imgs = imagesFrom(dt);
+      if (imgs.length) imgs.forEach((b) => uploadImage(b));
+      else showHintRef.current('仅支持拖入图片');
+    };
+    el?.addEventListener('paste', onPasteEvt, true);
+    el?.addEventListener('dragover', onDragOverEvt);
+    el?.addEventListener('drop', onDropEvt);
 
     // Forward the wheel to the app (claude) while it has mouse reporting on, so it scrolls
     // its own view even though we stripped its mouse-enable to keep drag-selection working.
@@ -1081,6 +928,9 @@ export default function TerminalView({
       ro.disconnect();
       dataSub.dispose();
       el?.removeEventListener('mouseup', onMouseUp);
+      el?.removeEventListener('paste', onPasteEvt, true);
+      el?.removeEventListener('dragover', onDragOverEvt);
+      el?.removeEventListener('drop', onDropEvt);
       el?.removeEventListener('wheel', onWheel, true);
       el?.removeEventListener('mousedown', onMouseDownFwd, true);
       window.removeEventListener('mousemove', onMouseMoveFwd, true);
@@ -1269,6 +1119,8 @@ export default function TerminalView({
               <button className={`cli-fab-btn${kbdOpen ? ' on' : ''}`} title="屏幕键盘" tabIndex={-1}
                 {...tapHandlers(() => setKbdOpen((v) => !v))}>⌨</button>
             )}
+            <button className={`cli-fab-btn${explorerOpen ? ' on' : ''}`} title="文件浏览器" tabIndex={-1}
+              {...tapHandlers(() => setExplorerOpen((v) => !v))}>📁</button>
             <button className={`cli-fab-btn${clipListOpen ? ' on' : ''}`} title="剪贴板" tabIndex={-1}
               {...tapHandlers(() => setClipListOpen((v) => !v))}>
               📋{clips.length > 0 && <span className="cli-fab-badge">{clips.length}</span>}
@@ -1388,6 +1240,15 @@ export default function TerminalView({
             placeholder="在此编辑/粘贴多行长文本。Ctrl/Cmd+Enter 直发 claude；Enter 或 Alt+Enter 换行；“插入不发送”只粘贴不回车；Esc 关闭。"
           />
         </FloatingPanel>
+      )}
+      {explorerOpen && (
+        <FileExplorer
+          gid={gid}
+          windowName={windowName}
+          sendInput={(d) => sendInputRef.current(d)}
+          onHint={(m) => showHintRef.current(m)}
+          onClose={() => setExplorerOpen(false)}
+        />
       )}
     </>
   );
