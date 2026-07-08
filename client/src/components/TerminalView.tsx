@@ -275,6 +275,8 @@ export default function TerminalView({
   // with no user activation, which browsers often block). Flushed on the next user gesture, where
   // the clipboard write is permitted. Cleared by a manual copy so it can't clobber the user's own.
   const pendingClipRef = useRef('');
+  // Single-flight guard for the short retry timer that flushes a blocked write once focus returns.
+  const clipRetryRef = useRef(false);
   // Send raw bytes to the pty over the socket (used by the on-screen virtual keyboard and
   // the clipboard "发送"). Wired up inside the effect once the socket exists.
   const sendInputRef = useRef<(data: string) => boolean>(() => false);
@@ -383,15 +385,17 @@ export default function TerminalView({
   // is allowed. Only refocus when the WHOLE page is unfocused (document.hasFocus() false) — never
   // steal focus from an open panel (editor / explorer), where hasFocus() is still true.
   const writeSysClip = (text: string) => {
-    // Reclaim page focus only when it's SAFE: document.hasFocus() is false both for the Alt/menu-bar
-    // blur we target (terminal still the active element → refocus helps) AND when the user tabbed away
-    // to another window entirely. In the latter, refocusing would fail anyway (a blurred window can't
-    // be focused from script) and would yank focus out of a panel input (Ctrl+G editor / explorer
-    // address bar) where the user is typing — so only refocus when the active element is the body or
-    // inside the terminal, never a panel. preventScroll so an off-screen terminal can't jump into view.
+    // Reclaim page focus when the document is blurred — holding Alt (claude's select/scroll modifier)
+    // activates the browser menu bar on Windows/Edge, which blurs the document, and writeText() is
+    // rejected while unfocused. Skip the reclaim ONLY when a panel input (Ctrl+G editor / explorer
+    // field, outside the terminal) holds focus, so we never yank the user's typing there; for every
+    // other state (body, <html>, the terminal itself, or nothing) reclaim so the write is allowed.
+    // preventScroll so an off-screen terminal can't jump into view.
     if (!document.hasFocus()) {
-      const ae = document.activeElement;
-      if (!ae || ae === document.body || (!!ref.current && ref.current.contains(ae))) {
+      const ae = document.activeElement as HTMLElement | null;
+      const inPanelInput = !!ae && !(!!ref.current && ref.current.contains(ae)) &&
+        (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+      if (!inPanelInput) {
         try {
           const ta = termRef.current?.textarea;
           if (ta) ta.focus({ preventScroll: true });
@@ -400,6 +404,20 @@ export default function TerminalView({
       }
     }
     return copyText(text);
+  };
+
+  // After a blocked immediate write, retry on a short timer: the block is usually a transient blur
+  // (Alt still held / the browser menu open), and the moment focus returns (Alt released) a retry
+  // succeeds — so the copy reaches the system clipboard with no extra action. Bounded (~3s) and
+  // single-flight so it can never churn; stops on success or when a manual copy clears pending.
+  const retryClipWrite = (attempt: number) => {
+    clipRetryRef.current = true;
+    const t = pendingClipRef.current;
+    if (!t || attempt >= 20) { clipRetryRef.current = false; return; }
+    writeSysClip(t).then((ok) => {
+      if (ok) { pendingClipRef.current = ''; clipRetryRef.current = false; showHintRef.current('已写入系统剪贴板'); }
+      else window.setTimeout(() => retryClipWrite(attempt + 1), 150);
+    });
   };
 
   // An OSC 52 copy from the app (claude): append it to the clipboard relay list so it's never lost,
@@ -416,7 +434,11 @@ export default function TerminalView({
     });
     writeSysClip(text).then((ok) => {
       if (ok) { pendingClipRef.current = ''; showHintRef.current('已复制到系统剪贴板并存入中转'); }
-      else { pendingClipRef.current = text; showHintRef.current('已存入中转 · 点一下终端即写入系统剪贴板'); }
+      else {
+        pendingClipRef.current = text;
+        showHintRef.current('已存入中转 · 松开 Alt / 点一下即写入系统剪贴板');
+        if (!clipRetryRef.current) window.setTimeout(() => retryClipWrite(0), 150); // auto-retry until focus returns
+      }
     });
   };
 
