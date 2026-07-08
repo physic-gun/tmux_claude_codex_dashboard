@@ -383,7 +383,22 @@ export default function TerminalView({
   // is allowed. Only refocus when the WHOLE page is unfocused (document.hasFocus() false) — never
   // steal focus from an open panel (editor / explorer), where hasFocus() is still true.
   const writeSysClip = (text: string) => {
-    if (!document.hasFocus()) { try { termRef.current?.focus(); } catch { /* ignore */ } }
+    // Reclaim page focus only when it's SAFE: document.hasFocus() is false both for the Alt/menu-bar
+    // blur we target (terminal still the active element → refocus helps) AND when the user tabbed away
+    // to another window entirely. In the latter, refocusing would fail anyway (a blurred window can't
+    // be focused from script) and would yank focus out of a panel input (Ctrl+G editor / explorer
+    // address bar) where the user is typing — so only refocus when the active element is the body or
+    // inside the terminal, never a panel. preventScroll so an off-screen terminal can't jump into view.
+    if (!document.hasFocus()) {
+      const ae = document.activeElement;
+      if (!ae || ae === document.body || (!!ref.current && ref.current.contains(ae))) {
+        try {
+          const ta = termRef.current?.textarea;
+          if (ta) ta.focus({ preventScroll: true });
+          else termRef.current?.focus();
+        } catch { /* ignore */ }
+      }
+    }
     return copyText(text);
   };
 
@@ -624,8 +639,10 @@ export default function TerminalView({
     };
     window.addEventListener('pointerdown', flushPendingClip, true);
     window.addEventListener('keydown', flushPendingClip, true);
-    window.addEventListener('wheel', flushPendingClip, { capture: true, passive: true });
-    window.addEventListener('focus', flushPendingClip, true); // returning to the tab (Chrome allows a focused write)
+    // 'focus' non-capture → only the window's own focus (returning to the tab; Chrome allows a focused
+    // write). A wheel flush was intentionally dropped: scrolling grants no user activation, so a write
+    // from it can only ever fail — and would re-arm pending and churn on every scroll tick.
+    window.addEventListener('focus', flushPendingClip);
 
     // Image intake via a context-menu paste or a drag-drop onto the terminal (Ctrl+V / Ctrl+Shift+V
     // go through the key handler's tryClipboardImage instead). Text paste/drag is left untouched.
@@ -964,8 +981,7 @@ export default function TerminalView({
       el?.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('pointerdown', flushPendingClip, true);
       window.removeEventListener('keydown', flushPendingClip, true);
-      window.removeEventListener('wheel', flushPendingClip, true);
-      window.removeEventListener('focus', flushPendingClip, true);
+      window.removeEventListener('focus', flushPendingClip);
       el?.removeEventListener('paste', onPasteEvt, true);
       el?.removeEventListener('dragover', onDragOverEvt);
       el?.removeEventListener('drop', onDropEvt);
