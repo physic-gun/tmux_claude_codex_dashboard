@@ -384,14 +384,18 @@ export default function TerminalView({
   // document is unfocused. Refocusing the terminal textarea pulls focus back to the page so the write
   // is allowed. Only refocus when the WHOLE page is unfocused (document.hasFocus() false) — never
   // steal focus from an open panel (editor / explorer), where hasFocus() is still true.
+  // A clipboard write only actually reaches the OS clipboard from within a live USER ACTIVATION — a
+  // real click/keypress in the last few seconds. NOT from a bare async event, and NOT from mere focus:
+  // on Chromium/Edge writeText() without activation still RESOLVES but silently writes nothing (the
+  // crux of the "hint said 已复制 but the clipboard is empty" bug). Holding Alt + wheel grants NO
+  // activation (modifier keys and the wheel don't count), so claude's async OSC 52 copy has none — it
+  // is kept pending and committed on the user's next real gesture (the pointerdown/keydown flush).
+  const canWriteClip = () => {
+    const ua = (navigator as unknown as { userActivation?: { isActive?: boolean } }).userActivation;
+    return ua && typeof ua.isActive === 'boolean' ? ua.isActive : document.hasFocus();
+  };
   const writeSysClip = (text: string): Promise<boolean> => {
-    // Commit to the OS clipboard ONLY while the document is actually focused. The crux of the Alt bug:
-    // on Chromium/Edge a writeText() from a BLURRED document (holding Alt hands focus to the browser
-    // menu bar) RESOLVES successfully but never actually places anything on the OS clipboard — so
-    // trusting that result silently drops the copy (hint said "已复制", clipboard stayed empty). When
-    // blurred we neither write nor claim success; the copy is kept pending and committed the instant
-    // focus returns — via the retry timer, the next click/keypress, or the tab regaining focus.
-    if (!document.hasFocus()) return Promise.resolve(false);
+    if (!canWriteClip()) return Promise.resolve(false);
     return copyText(text);
   };
 
@@ -404,7 +408,7 @@ export default function TerminalView({
     const t = pendingClipRef.current;
     if (!t || attempt >= 40) { clipRetryRef.current = false; return; } // ~6s; blurred ticks are cheap no-ops
     writeSysClip(t).then((ok) => {
-      if (ok) { pendingClipRef.current = ''; clipRetryRef.current = false; showHintRef.current('已写入系统剪贴板'); }
+      if (ok) { pendingClipRef.current = ''; clipRetryRef.current = false; showHintRef.current('✓ 已写入系统剪贴板'); }
       else window.setTimeout(() => retryClipWrite(attempt + 1), 150);
     });
   };
@@ -422,11 +426,11 @@ export default function TerminalView({
       return next;
     });
     writeSysClip(text).then((ok) => {
-      if (ok) { pendingClipRef.current = ''; showHintRef.current('已复制到系统剪贴板并存入中转'); }
+      if (ok) { pendingClipRef.current = ''; showHintRef.current('✓ 已写入系统剪贴板（同时存入中转）'); }
       else {
         pendingClipRef.current = text;
-        showHintRef.current('已存入中转 · 松开 Alt / 点一下即写入系统剪贴板');
-        if (!clipRetryRef.current) window.setTimeout(() => retryClipWrite(0), 150); // auto-retry until focus returns
+        showHintRef.current('已存入中转 · 在终端点一下 / 按任意键即写入系统剪贴板');
+        if (!clipRetryRef.current) window.setTimeout(() => retryClipWrite(0), 150); // in case activation lingers
       }
     });
   };
@@ -646,7 +650,7 @@ export default function TerminalView({
       const t = pendingClipRef.current;
       if (!t) return;
       pendingClipRef.current = '';
-      writeSysClip(t).then((ok) => { if (ok) showHintRef.current('已写入系统剪贴板'); else pendingClipRef.current = t; });
+      writeSysClip(t).then((ok) => { if (ok) showHintRef.current('✓ 已写入系统剪贴板'); else pendingClipRef.current = t; });
     };
     window.addEventListener('pointerdown', flushPendingClip, true);
     window.addEventListener('keydown', flushPendingClip, true);
