@@ -376,10 +376,21 @@ export default function TerminalView({
     hintTimerRef.current = window.setTimeout(() => setHint(''), 2200);
   };
 
+  // Write to the SYSTEM clipboard, first reclaiming page focus when the document lost it — holding
+  // Alt (the selection modifier for claude's own select/scroll) activates the browser menu bar on
+  // Windows/Edge, which unfocuses the document, and navigator.clipboard.writeText() rejects while the
+  // document is unfocused. Refocusing the terminal textarea pulls focus back to the page so the write
+  // is allowed. Only refocus when the WHOLE page is unfocused (document.hasFocus() false) — never
+  // steal focus from an open panel (editor / explorer), where hasFocus() is still true.
+  const writeSysClip = (text: string) => {
+    if (!document.hasFocus()) { try { termRef.current?.focus(); } catch { /* ignore */ } }
+    return copyText(text);
+  };
+
   // An OSC 52 copy from the app (claude): append it to the clipboard relay list so it's never lost,
-  // AND put it on the system clipboard. The immediate write is best-effort (an OSC 52 arrives in a
-  // WebSocket event with no user activation, which the browser often blocks); when it's blocked the
-  // text is held in pendingClipRef and flushed to the system clipboard on the next user gesture.
+  // AND put it on the system clipboard. The immediate write can still be blocked (the OSC 52 arrives
+  // in a WebSocket event with no user activation); when it is, the text is held in pendingClipRef and
+  // flushed to the system clipboard on the next user gesture.
   onOsc52Ref.current = (text: string) => {
     if (!text) return;
     setClips((prev) => {
@@ -388,7 +399,7 @@ export default function TerminalView({
       saveClips(gid, windowName, next);
       return next;
     });
-    copyText(text).then((ok) => {
+    writeSysClip(text).then((ok) => {
       if (ok) { pendingClipRef.current = ''; showHintRef.current('已复制到系统剪贴板并存入中转'); }
       else { pendingClipRef.current = text; showHintRef.current('已存入中转 · 点一下终端即写入系统剪贴板'); }
     });
@@ -609,7 +620,7 @@ export default function TerminalView({
       const t = pendingClipRef.current;
       if (!t) return;
       pendingClipRef.current = '';
-      copyText(t).then((ok) => { if (ok) showHintRef.current('已写入系统剪贴板'); else pendingClipRef.current = t; });
+      writeSysClip(t).then((ok) => { if (ok) showHintRef.current('已写入系统剪贴板'); else pendingClipRef.current = t; });
     };
     window.addEventListener('pointerdown', flushPendingClip, true);
     window.addEventListener('keydown', flushPendingClip, true);
