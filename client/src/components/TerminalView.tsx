@@ -384,25 +384,14 @@ export default function TerminalView({
   // document is unfocused. Refocusing the terminal textarea pulls focus back to the page so the write
   // is allowed. Only refocus when the WHOLE page is unfocused (document.hasFocus() false) — never
   // steal focus from an open panel (editor / explorer), where hasFocus() is still true.
-  const writeSysClip = (text: string) => {
-    // Reclaim page focus when the document is blurred — holding Alt (claude's select/scroll modifier)
-    // activates the browser menu bar on Windows/Edge, which blurs the document, and writeText() is
-    // rejected while unfocused. Skip the reclaim ONLY when a panel input (Ctrl+G editor / explorer
-    // field, outside the terminal) holds focus, so we never yank the user's typing there; for every
-    // other state (body, <html>, the terminal itself, or nothing) reclaim so the write is allowed.
-    // preventScroll so an off-screen terminal can't jump into view.
-    if (!document.hasFocus()) {
-      const ae = document.activeElement as HTMLElement | null;
-      const inPanelInput = !!ae && !(!!ref.current && ref.current.contains(ae)) &&
-        (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
-      if (!inPanelInput) {
-        try {
-          const ta = termRef.current?.textarea;
-          if (ta) ta.focus({ preventScroll: true });
-          else termRef.current?.focus();
-        } catch { /* ignore */ }
-      }
-    }
+  const writeSysClip = (text: string): Promise<boolean> => {
+    // Commit to the OS clipboard ONLY while the document is actually focused. The crux of the Alt bug:
+    // on Chromium/Edge a writeText() from a BLURRED document (holding Alt hands focus to the browser
+    // menu bar) RESOLVES successfully but never actually places anything on the OS clipboard — so
+    // trusting that result silently drops the copy (hint said "已复制", clipboard stayed empty). When
+    // blurred we neither write nor claim success; the copy is kept pending and committed the instant
+    // focus returns — via the retry timer, the next click/keypress, or the tab regaining focus.
+    if (!document.hasFocus()) return Promise.resolve(false);
     return copyText(text);
   };
 
@@ -413,7 +402,7 @@ export default function TerminalView({
   const retryClipWrite = (attempt: number) => {
     clipRetryRef.current = true;
     const t = pendingClipRef.current;
-    if (!t || attempt >= 20) { clipRetryRef.current = false; return; }
+    if (!t || attempt >= 40) { clipRetryRef.current = false; return; } // ~6s; blurred ticks are cheap no-ops
     writeSysClip(t).then((ok) => {
       if (ok) { pendingClipRef.current = ''; clipRetryRef.current = false; showHintRef.current('已写入系统剪贴板'); }
       else window.setTimeout(() => retryClipWrite(attempt + 1), 150);
