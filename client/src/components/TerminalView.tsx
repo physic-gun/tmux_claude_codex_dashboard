@@ -435,6 +435,16 @@ export default function TerminalView({
     });
   };
 
+  // Write the newest relay clip to the SYSTEM clipboard. Invoked from a button — a real click IS a
+  // user activation, so this write actually lands, unlike claude's async OSC 52 copy (which has none:
+  // Alt+wheel grants no activation, so it can only sit in the relay until an explicit gesture like this).
+  function writeLatestToSysClip() {
+    const t = clips[0]?.text;
+    if (!t) { showHintRef.current('剪贴板中转为空'); return; }
+    pendingClipRef.current = '';
+    copyText(t).then((ok) => showHintRef.current(ok ? '✓ 已写入系统剪贴板' : '写入失败（需 https / 已授权）'));
+  }
+
   function saveDraft(v: string) {
     setDraft(v);
     try { localStorage.setItem(draftKey, v); } catch {}
@@ -1163,6 +1173,12 @@ export default function TerminalView({
                   <button className="clip-x" title="关闭" onClick={() => setClipListOpen(false)}>×</button>
                 </span>
               </div>
+              {clips.length > 0 && (
+                <button className="clip-write-sys" onClick={writeLatestToSysClip}
+                  title="把最新一条写入系统剪贴板（点击即完成手势写入，claude 复制无法自动写入系统剪贴板时用它）">
+                  📥 写入系统剪贴板（最新一条）
+                </button>
+              )}
               {clips.length === 0 ? (
                 <div className="clip-empty">还没有捕获到复制内容。<br />claude 里 /copy 或选中文字自动复制后会出现在这里。</div>
               ) : (
@@ -1190,6 +1206,10 @@ export default function TerminalView({
             )}
             <button className={`cli-fab-btn${explorerOpen ? ' on' : ''}`} title="文件浏览器" tabIndex={-1}
               {...tapHandlers(() => setExplorerOpen((v) => !v))}>📁</button>
+            {clips.length > 0 && (
+              <button className="cli-fab-btn" title="把最新复制写入系统剪贴板（点击=手势，可靠写入）" tabIndex={-1}
+                {...tapHandlers(() => writeLatestToSysClip())}>📥</button>
+            )}
             <button className={`cli-fab-btn${clipListOpen ? ' on' : ''}`} title="剪贴板" tabIndex={-1}
               {...tapHandlers(() => setClipListOpen((v) => !v))}>
               📋{clips.length > 0 && <span className="cli-fab-badge">{clips.length}</span>}

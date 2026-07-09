@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type DragEvent as ReactDragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { api, fetchBlob, postRaw } from '../api';
 import { copyText } from '../lib/clipboard';
 import { fmtSize, isMarkdownPath, renderMarkdown, type FileView } from '../lib/fileview';
@@ -109,6 +109,29 @@ export default function FileExplorer({
   const [previewPath, setPreviewPath] = useState('');
   const [previewMd, setPreviewMd] = useState(false);
   const [zoom, setZoom] = useState(false);
+  // Draggable height of the preview split (persisted); the file list flexes to fill the rest.
+  const [previewH, setPreviewH] = useState(() => Number(localStorage.getItem('tmuxdash:fx:previewH')) || 240);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Drag the divider between the list and the preview to resize the preview (dragging up = taller).
+  const startPreviewResize = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = previewH;
+    const rootH = rootRef.current?.clientHeight ?? 600;
+    let latest = startH;
+    const move = (ev: PointerEvent) => {
+      latest = Math.max(90, Math.min(rootH - 170, startH + (startY - ev.clientY)));
+      setPreviewH(latest);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      try { localStorage.setItem('tmuxdash:fx:previewH', String(Math.round(latest))); } catch { /* ignore */ }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -323,7 +346,7 @@ export default function FileExplorer({
       onClose={onClose}
       bodyClassName="fx-body"
     >
-      <div className="fx-root" onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
+      <div className="fx-root" ref={rootRef} onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
         onDragLeave={() => setDropActive(false)} onDrop={onDrop}>
         {/* Nav row: up · editable address · reload · home(pane cwd) */}
         <div className="fx-nav">
@@ -431,9 +454,11 @@ export default function FileExplorer({
           {truncated && <div className="fx-empty">项目过多，仅显示前一部分。请用过滤或进入子目录。</div>}
         </div>
 
-        {/* Preview split */}
+        {/* Preview split (draggable divider resizes it) */}
         {preview.status !== 'idle' && preview.status !== 'none' && (
-          <div className="fx-preview">
+          <>
+            <div className="fx-split" title="拖动调整预览高度（上下拖）" onPointerDown={startPreviewResize} />
+            <div className="fx-preview" style={{ height: previewH }}>
             <div className="fx-preview-head">
               <span className="fx-preview-path" title={previewPath}>📄 {previewPath}</span>
               <span className="fx-preview-actions">
@@ -448,7 +473,8 @@ export default function FileExplorer({
             {preview.status === 'loading' && <div className="file-note">读取中…</div>}
             {preview.status === 'error' && <div className="file-note">读取失败：{preview.error}</div>}
             {preview.status === 'ok' && previewBody()}
-          </div>
+            </div>
+          </>
         )}
 
         {/* Footer */}
