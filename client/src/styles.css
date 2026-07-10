@@ -431,6 +431,10 @@ input { font-family: inherit; }
 .md-body hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .md-body strong { color: #fff; }
 .md-body:first-child > :first-child, .md-body > :first-child { margin-top: 0; }
+.md-body table.md-table { border-collapse: collapse; margin: 10px 0; font-size: 12.5px; max-width: 100%; }
+.md-body table.md-table th, .md-body table.md-table td { border: 1px solid var(--border); padding: 5px 10px; vertical-align: top; }
+.md-body table.md-table th { background: var(--panel-2); font-weight: 600; color: #fff; white-space: nowrap; }
+.md-body table.md-table tr:nth-child(even) td { background: color-mix(in srgb, var(--panel-2) 45%, transparent); }
 
 /* ---------- on-screen keyboard (mobile) ---------- */
 .vkbd {

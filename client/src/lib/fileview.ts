@@ -64,6 +64,14 @@ export function renderMarkdown(src: string): string {
   let listType: 'ul' | 'ol' | null = null;
   const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(escHtml(para.join(' ')))}</p>`); para = []; } };
   const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+  // GFM table helpers: a separator row is cells of optional-colon + dashes + optional-colon; a row is
+  // split on unescaped pipes (a leading/trailing pipe is optional, and `\|` is a literal pipe).
+  const isTableSep = (s: string) => {
+    const t = s.trim();
+    return t.includes('-') && t.includes('|') && /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/.test(t);
+  };
+  const splitRow = (s: string) =>
+    s.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
   for (let i = 0; i < lines.length; ) {
     const line = lines[i];
     const fence = line.match(/^\s*(```+|~~~+)/); // fenced code block
@@ -78,6 +86,30 @@ export function renderMarkdown(src: string): string {
       continue;
     }
     if (/^\s*$/.test(line)) { flushPara(); closeList(); i++; continue; }
+    // GFM table: a row containing "|" immediately followed by a |---|:--:| separator row.
+    if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara(); closeList();
+      const headers = splitRow(line);
+      const aligns = splitRow(lines[i + 1]).map((c) => {
+        const l = c.startsWith(':'); const r = c.endsWith(':');
+        return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
+      });
+      i += 2;
+      const body: string[][] = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') { body.push(splitRow(lines[i])); i++; }
+      const cell = (tag: 'th' | 'td', text: string, idx: number) =>
+        `<${tag}${aligns[idx] ? ` style="text-align:${aligns[idx]}"` : ''}>${mdInline(escHtml(text || ''))}</${tag}>`;
+      let html = '<table class="md-table"><thead><tr>';
+      headers.forEach((hc, idx) => { html += cell('th', hc, idx); });
+      html += '</tr></thead><tbody>';
+      for (const r of body) {
+        html += '<tr>';
+        for (let idx = 0; idx < headers.length; idx++) html += cell('td', r[idx] ?? '', idx);
+        html += '</tr>';
+      }
+      out.push(html + '</tbody></table>');
+      continue;
+    }
     const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
     if (h) { flushPara(); closeList(); out.push(`<h${h[1].length}>${mdInline(escHtml(h[2]))}</h${h[1].length}>`); i++; continue; }
     if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push('<hr />'); i++; continue; }
