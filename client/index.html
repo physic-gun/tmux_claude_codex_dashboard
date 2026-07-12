@@ -4,6 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>Tmux Dashboard</title>
+    <!-- Set the theme before any CSS paints so a light-mode user never sees a dark flash.
+         Mirrors lib/theme.ts (key 'tmuxdash:theme', default 'dark'). -->
+    <script>
+      try {
+        document.documentElement.setAttribute(
+          'data-theme',
+          localStorage.getItem('tmuxdash:theme') === 'light' ? 'light' : 'dark'
+        );
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

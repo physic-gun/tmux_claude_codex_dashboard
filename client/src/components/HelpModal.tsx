@@ -1,3 +1,6 @@
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from './ui/dialog';
+import { Button } from './ui/button';
+
 interface Tip {
   keys: string;
   desc: string;
@@ -27,9 +30,9 @@ const TIPS: Tip[] = [
 
 export default function HelpModal({ onClose }: { onClose: () => void }) {
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal help-modal">
-        <div className="modal-title">快捷键 &amp; 使用提示</div>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="help-modal max-w-[560px]">
+        <DialogTitle>快捷键 &amp; 使用提示</DialogTitle>
         <table className="help-table">
           <tbody>
             {TIPS.map((t) => (
@@ -40,10 +43,10 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
             ))}
           </tbody>
         </table>
-        <div className="modal-actions">
-          <button className="btn-primary" onClick={onClose}>知道了</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button onClick={onClose}>知道了</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

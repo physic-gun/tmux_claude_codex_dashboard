@@ -116,12 +116,19 @@ export default function Dashboard() {
     loadGroups();
   }, [loadGroups]);
 
+  // Live activeGid for async guards: a windows response for a group the user has already left
+  // (a 4s poll or a trailing reload that was in flight during the switch) must be dropped, not
+  // applied — otherwise it would resurrect the old group's tabs/activeWindow under the new one.
+  const activeGidRef = useRef(activeGid);
+  activeGidRef.current = activeGid;
+
   // Tracks which group the live `activeWindow` belongs to, so a poll refresh keeps the current
   // tab, but switching groups (or returning to one) restores THAT group's last-opened tab — even
   // when both groups happen to have a same-named tab (e.g. "main").
   const loadedGidRef = useRef<number | null>(null);
   const loadWindows = useCallback(async (gid: number) => {
     const w: WindowsResp = await api.get(`/groups/${gid}/windows`);
+    if (activeGidRef.current !== gid) return; // group switched while in flight — stale response
     setWindows(w);
     const sameGroup = loadedGidRef.current === gid;
     loadedGidRef.current = gid;
@@ -149,19 +156,50 @@ export default function Dashboard() {
     });
   }, []);
 
+  // Terminal pool: every tab VISITED in the current group stays mounted (hidden when inactive),
+  // so switching back is instant — no xterm/WebSocket/pty teardown+rebuild. Lazy: a tab is only
+  // mounted on its first activation (eager-mounting all open tabs would spawn N ptys on every
+  // group switch). Pruned when a window is closed/killed.
+  const [pool, setPool] = useState<string[]>([]);
+  // Group switch: reset the pool + active window DURING RENDER (React's adjust-state-on-prop-
+  // change pattern — it re-renders before committing). Clearing in an effect would run AFTER the
+  // commit, so the first render of the new gid would still mount the ENTIRE old pool under the
+  // new gid's keys: N wasted xterm/WebGL/WS spawns per switch, torn down one render later.
+  const [poolGid, setPoolGid] = useState(activeGid);
+  if (poolGid !== activeGid) {
+    setPoolGid(activeGid);
+    setPool([]);
+    setActiveWindow(null);
+  }
+  useEffect(() => {
+    if (activeWindow) setPool((p) => (p.includes(activeWindow) ? p : [...p, activeWindow]));
+  }, [activeWindow]);
+  useEffect(() => {
+    setPool((p) => {
+      const n = p.filter((w) => windows.open.includes(w));
+      return n.length === p.length ? p : n; // keep the reference stable on the 4s poll
+    });
+  }, [windows.open]);
+
   useEffect(() => {
     if (activeGid != null) {
       loadWindows(activeGid);
     } else {
       setWindows({ open: [], background: [] });
-      setActiveWindow(null);
     }
   }, [activeGid, loadWindows]);
+
+  // True while a tab reorder is being persisted, so the background poll doesn't clobber the
+  // optimistic order with a stale (pre-commit) server response.
+  const reorderingRef = useRef(false);
 
   // Poll so tab labels track each window's live pane title (e.g. claude's session name).
   useEffect(() => {
     if (activeGid == null) return;
-    const id = setInterval(() => { loadWindows(activeGid).catch(() => {}); }, 4000);
+    const id = setInterval(() => {
+      if (reorderingRef.current) return;
+      loadWindows(activeGid).catch(() => {});
+    }, 4000);
     return () => clearInterval(id);
   }, [activeGid, loadWindows]);
 
@@ -184,6 +222,20 @@ export default function Dashboard() {
     setActiveGid(gid);
     await loadWindows(gid);
     if (r?.name) selectWindow(r.name);
+  }
+
+  // Persist a new tab order for the active group. Optimistic: reorder locally now (so the drag/menu
+  // action feels instant), persist to the server (windows.sort_order), then reload to reconcile.
+  async function reorderWindows(order: string[]) {
+    if (activeGid == null) return;
+    reorderingRef.current = true;
+    setWindows((w) => ({ ...w, open: order }));
+    try {
+      try { await api.post(`/groups/${activeGid}/windows/reorder`, { order }); } catch { /* loadWindows restores truth */ }
+      await loadWindows(activeGid);
+    } finally {
+      reorderingRef.current = false;
+    }
   }
 
   async function reorderGroups(ids: number[]) {
@@ -295,6 +347,7 @@ export default function Dashboard() {
               <div className="topbar-spacer" />
             ) : (
               <TabBar
+                gid={activeGid}
                 windows={windows.open}
                 titles={windows.titles}
                 branches={windows.branches}
@@ -302,6 +355,7 @@ export default function Dashboard() {
                 onSelect={selectWindow}
                 onClose={closeWindow}
                 onAddWindow={addWindow}
+                onReorder={reorderWindows}
               />
             )}
             <button className="icon-btn" title="Claude 会话历史" onClick={() => setSessionsOpen(true)}>🕘</button>
@@ -332,19 +386,28 @@ export default function Dashboard() {
         ) : (
           <>
             <div className="term-area">
-              {activeWindow ? (
-                <TerminalView
-                  key={`${activeGid}:${activeWindow}`}
-                  gid={activeGid}
-                  windowName={activeWindow}
-                  stepSmall={user?.scroll_step_small ?? 20}
-                  stepBig={user?.scroll_step_big ?? 60}
-                  scrollAuto={!!user?.scroll_auto}
-                  fontFamily={user?.term_font}
-                  selectMode={selectMode}
-                  mobile={mobile}
-                />
-              ) : (
+              {/* Include the just-activated window in the same render (the pool effect commits it
+                  a beat later) so a first visit never flashes the empty-state placeholder. */}
+              {(activeWindow && !pool.includes(activeWindow) ? [...pool, activeWindow] : pool).map((w) => (
+                <div
+                  key={`${activeGid}:${w}`}
+                  className="term-slot"
+                  style={w === activeWindow ? undefined : { display: 'none' }}
+                >
+                  <TerminalView
+                    gid={activeGid}
+                    windowName={w}
+                    active={w === activeWindow}
+                    stepSmall={user?.scroll_step_small ?? 20}
+                    stepBig={user?.scroll_step_big ?? 60}
+                    scrollAuto={!!user?.scroll_auto}
+                    fontFamily={user?.term_font}
+                    selectMode={selectMode}
+                    mobile={mobile}
+                  />
+                </div>
+              ))}
+              {!activeWindow && (
                 <div className="center">没有打开的窗口，点击选项卡栏的 ＋ 新建隔离 agent（独立 worktree + 分支，留空=随机分支名）</div>
               )}
             </div>

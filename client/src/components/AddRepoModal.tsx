@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { TrackableFolder } from '../types';
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from './ui/dialog';
+import { Button } from './ui/button';
 
 // Discover git repos under the group dir (resolved server-side) and multi-select which to track.
-// Already-tracked folders come back checked + disabled. Reuses the .modal-overlay shell.
+// Already-tracked folders come back checked + disabled. Rendered in a shadcn/ui <Dialog>.
 export default function AddRepoModal({
   gid,
   onClose,
@@ -65,9 +67,9 @@ export default function AddRepoModal({
   }
 
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal repo-add-modal">
-        <div className="modal-title">添加要跟踪的 Git 仓库</div>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="repo-add-modal max-w-[520px]">
+        <DialogTitle>添加要跟踪的 Git 仓库</DialogTitle>
         {groupDir && (
           <div className="field-label" title={groupDir}>
             扫描目录：{groupDir}
@@ -97,15 +99,15 @@ export default function AddRepoModal({
 
         {err && <div className="err small">{err}</div>}
 
-        <div className="modal-actions">
-          <button className="btn-ghost" onClick={onClose}>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
             取消
-          </button>
-          <button className="btn-primary" disabled={!picked.size || busy} onClick={submit}>
+          </Button>
+          <Button disabled={!picked.size || busy} onClick={submit}>
             跟踪所选 ({picked.size})
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

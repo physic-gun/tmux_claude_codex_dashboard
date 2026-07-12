@@ -4,8 +4,9 @@ import { useEffect, useRef, useState, type ReactNode, type PointerEvent as React
 // A non-blocking window (no backdrop, so the CLI behind stays scrollable/usable): drag by its
 // title bar, resize from the bottom-right grip, position + size persisted per storageKey and
 // clamped into the viewport. Shared by the Ctrl+G editor, the clipboard editor, the file preview
-// magnify reader, and the file explorer — so several can coexist. (Terminal-hosted ones auto-close
-// on tab/group switch because TerminalView remounts then.)
+// magnify reader, and the file explorer — so several can coexist. (Terminal-hosted ones persist
+// HIDDEN across tab switches — pooled TerminalViews stay mounted, display:none'd with their slot —
+// and auto-close only on group switch / window close, when the slot unmounts.)
 export type Rect = { x: number; y: number; w: number; h: number };
 const PANEL_MIN_W = 300;
 const PANEL_MIN_H = 170;

@@ -1,0 +1,57 @@
+/*
+ * Tailwind v4 + shadcn/ui token layer — scoped to the migrated modal/form/button layer only.
+ *
+ * IMPORTANT: this file is imported in main.tsx BEFORE styles.css, so the hand-written
+ * Tokyo-Night theme in styles.css always wins the cascade for the terminal / panels / FABs.
+ *
+ * Tailwind v4's Preflight (its global reset) is deliberately NOT imported here: it would
+ * reset the app's borders/buttons/headings and clash with styles.css. shadcn's Radix
+ * components don't need Preflight — they carry their own explicit utility classes — so we
+ * pull in only `theme` (design tokens) and `utilities` (the class engine). The result is a
+ * purely additive stylesheet: it defines the shadcn utility classes our ui/ components
+ * reference, and touches nothing else.
+ *
+ * The shadcn design tokens are declared with LITERAL values directly inside @theme (not via a
+ * separate :root + @theme inline indirection). This is deliberate: the app has a single dark
+ * theme, and putting the concrete Tokyo-Night colors in @theme guarantees Tailwind emits both
+ * the `--color-*` variables AND resolves `bg-primary`/`border-border`/… to them. A bare :root
+ * block gets tree-shaken by Lightning CSS during the production build, leaving the tokens
+ * undefined — so we avoid that pattern here.
+ */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Map shadcn/ui design tokens onto the existing Tokyo-Night palette (dark theme).
+   Values mirror the CSS variables at the top of styles.css so the Dialog / Button / Input
+   match the rest of the app pixel-for-pixel. */
+@theme {
+  --color-background: #1a1b26;         /* var(--panel)  — dialog surface */
+  --color-foreground: #c0caf5;         /* var(--text) */
+  --color-card: #1a1b26;               /* var(--panel) */
+  --color-card-foreground: #c0caf5;
+  --color-popover: #1a1b26;
+  --color-popover-foreground: #c0caf5;
+  --color-primary: #7aa2f7;            /* var(--accent) */
+  --color-primary-foreground: #0b0c14; /* dark ink used on accent buttons in styles.css */
+  --color-secondary: #20212e;          /* var(--panel-2) — ghost button bg */
+  --color-secondary-foreground: #c0caf5;
+  --color-muted: #20212e;              /* var(--panel-2) */
+  --color-muted-foreground: #6b7089;   /* var(--muted) text */
+  --color-accent: #20212e;             /* var(--panel-2) — hover surface */
+  --color-accent-foreground: #c0caf5;
+  --color-destructive: #f7768e;        /* var(--danger) */
+  --color-destructive-foreground: #0b0c14;
+  --color-border: #2a2c3a;             /* var(--border) */
+  --color-input: #2a2c3a;              /* var(--border) — input border */
+  --color-ring: #7aa2f7;               /* var(--accent) — focus ring */
+
+  /* 10px base so shadcn's rounded-md (`--radius-md` = radius − 2px) lands on 8px,
+     matching the old .btn-* / .path-input radius exactly. --radius-lg keeps the
+     dialog on 12px like the old .modal. */
+  --radius: 0.625rem;
+  --radius-lg: 0.625rem;
+  --radius-md: calc(0.625rem - 2px);
+  --radius-sm: calc(0.625rem - 4px);
+}

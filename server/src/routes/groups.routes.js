@@ -62,7 +62,7 @@ async function archiveWindowPane(group, windowName, meta = {}) {
   }
 }
 
-// Expand a "web[[1-5]]" / "web[[n]]" pattern into concrete window names.
+// Expand a "kiaa[[1-5]]" / "kiaa[[n]]" pattern into concrete window names.
 // "[[n]]" defaults to the range 1-5; "[[a-b]]" uses the given inclusive range.
 function expandPattern(input) {
   const m = input.match(/\[\[(?:(\d+)-(\d+)|n)\]\]/);
@@ -313,6 +313,29 @@ router.get('/:gid/windows', loadGroup, ah(async (req, res) => {
     branches,
   });
 }));
+
+// Persist tab order within a group: body { order: [windowName, ...] }. The open tabs named in
+// `order` are packed to the front in that order; every window NOT named (untouched open tabs plus
+// all background ones) keeps its current relative order after them. Mirrors /groups/reorder — the
+// windows GET handler serves `open` sorted by (sort_order, id), so this is what the tab bar reads.
+router.post('/:gid/windows/reorder', loadGroup, (req, res) => {
+  const order = Array.isArray(req.body?.order) ? req.body.order.map(String) : null;
+  if (!order || !order.length) return res.status(400).json({ error: '缺少排序列表' });
+  const rows = db
+    .prepare('SELECT id, name FROM windows WHERE group_id = ? ORDER BY sort_order, id')
+    .all(req.group.id);
+  const byName = new Map(rows.map((r) => [r.name, r]));
+  const seen = new Set();
+  const ordered = [];
+  for (const name of order) {
+    const row = byName.get(name);
+    if (row && !seen.has(row.id)) { ordered.push(row); seen.add(row.id); }
+  }
+  for (const row of rows) if (!seen.has(row.id)) ordered.push(row); // untouched + background, in place
+  const upd = db.prepare('UPDATE windows SET sort_order = ? WHERE id = ?');
+  db.transaction((list) => { let i = 0; for (const row of list) upd.run(i++, row.id); })(ordered);
+  res.json({ ok: true });
+});
 
 router.post('/:gid/windows', loadGroup, ah(async (req, res) => {
   const raw = (req.body?.name || '').trim();

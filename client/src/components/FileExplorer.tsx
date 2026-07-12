@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type DragEvent as ReactDragEvent } from 'react';
 import { api, fetchBlob, postRaw } from '../api';
 import { copyText } from '../lib/clipboard';
 import { fmtSize, isMarkdownPath, renderMarkdown, type FileView } from '../lib/fileview';
@@ -78,6 +78,9 @@ function sortEntries(list: Entry[], key: SortKey): Entry[] {
 
 const HIDDEN_KEY = 'tmuxdash:fx:hidden';
 const SORT_KEY = 'tmuxdash:fx:sort';
+// One-time cleanup: the bottom preview split (and its persisted height) was replaced by the
+// floating reader opening directly on file click.
+try { localStorage.removeItem('tmuxdash:fx:previewH'); } catch { /* ignore */ }
 
 export default function FileExplorer({
   gid, windowName, sendInput, onHint, onClose,
@@ -104,34 +107,11 @@ export default function FileExplorer({
   const [renaming, setRenaming] = useState<{ name: string; value: string } | null>(null);
   const [dropActive, setDropActive] = useState(false);
 
-  // File preview (selecting a file loads it into the bottom split; ⛶ pops the magnify reader).
+  // File preview: clicking a file pops the floating reader directly (no inline bottom split).
   const [preview, setPreview] = useState<FileView>({ status: 'idle' });
   const [previewPath, setPreviewPath] = useState('');
   const [previewMd, setPreviewMd] = useState(false);
   const [zoom, setZoom] = useState(false);
-  // Draggable height of the preview split (persisted); the file list flexes to fill the rest.
-  const [previewH, setPreviewH] = useState(() => Number(localStorage.getItem('tmuxdash:fx:previewH')) || 240);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  // Drag the divider between the list and the preview to resize the preview (dragging up = taller).
-  const startPreviewResize = (e: ReactPointerEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = previewH;
-    const rootH = rootRef.current?.clientHeight ?? 600;
-    let latest = startH;
-    const move = (ev: PointerEvent) => {
-      latest = Math.max(90, Math.min(rootH - 170, startH + (startY - ev.clientY)));
-      setPreviewH(latest);
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      try { localStorage.setItem('tmuxdash:fx:previewH', String(Math.round(latest))); } catch { /* ignore */ }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -158,7 +138,7 @@ export default function FileExplorer({
       if (!r.ok) { setError(r.error || '无法读取目录'); setLoading(false); return; }
       // Drop a stale file preview only on a real directory change — keep it across refresh /
       // hidden-toggle / post-mutation reloads of the same dir (which pass the current cwd).
-      if (cwdRef.current && cwdRef.current !== r.path) { setPreview({ status: 'idle' }); setPreviewPath(''); setZoom(false); }
+      if (cwdRef.current && cwdRef.current !== r.path) { previewSeqRef.current++; setPreview({ status: 'idle' }); setPreviewPath(''); setZoom(false); }
       setCwd(r.path); setAddr(r.path); setParent(r.parent ?? null);
       setEntries(r.entries || []); setTruncated(!!r.truncated);
       setSelected(null); setCreating(null); setRenaming(null);
@@ -182,17 +162,25 @@ export default function FileExplorer({
   }, [entries, filter, sortKey]);
 
   // ── File preview ────────────────────────────────────────────────────────────────────────────
+  // Opens the floating reader immediately (in its loading state) so the click feels instant.
+  // Epoch-guarded like load(): rapid clicks A→B must not let A's slow response land under B's
+  // title (mismatched content + copy buttons); close/dir-change bump the epoch to cancel in-flight.
+  const previewSeqRef = useRef(0);
   const loadPreview = useCallback(async (full: string) => {
-    setPreviewPath(full); setPreview({ status: 'loading' });
+    const seq = ++previewSeqRef.current;
+    setPreviewPath(full); setPreview({ status: 'loading' }); setZoom(true);
     try {
       const r = await api.get(`/fs/file?${qs({ path: full })}`);
+      if (seq !== previewSeqRef.current) return; // superseded by a newer click / close
       if (r?.exists && r.isFile && !r.error) { setPreview({ status: 'ok', ...r }); setPreviewMd(isMarkdownPath(full)); }
       else if (r?.error) setPreview({ status: 'error', error: r.error });
-      else setPreview({ status: 'none' });
-    } catch (e) { setPreview({ status: 'error', error: (e as Error).message }); }
+      // Stale listing (the pane's agent deleted/moved it): say so instead of silently vanishing.
+      else setPreview({ status: 'error', error: '文件不存在或已被移动（目录列表可能已过期，可点 ⟳ 刷新）' });
+    } catch (e) { if (seq === previewSeqRef.current) setPreview({ status: 'error', error: (e as Error).message }); }
   }, [qs]);
-  const closePreview = () => { setPreview({ status: 'idle' }); setPreviewPath(''); setZoom(false); };
-  useEffect(() => { if (preview.status !== 'ok') setZoom(false); }, [preview.status]);
+  const closePreview = () => { previewSeqRef.current++; setPreview({ status: 'idle' }); setPreviewPath(''); setZoom(false); };
+  // Close the reader only when the file context is gone (not on 'loading' — it opens in that state).
+  useEffect(() => { if (preview.status === 'idle' || preview.status === 'none') setZoom(false); }, [preview.status]);
 
   // ── Navigation / row activation ──────────────────────────────────────────────────────────────
   const openEntry = useCallback((e: Entry) => {
@@ -298,6 +286,9 @@ export default function FileExplorer({
   // ── Keyboard nav over the visible list ───────────────────────────────────────────────────────
   function onListKeyDown(ev: ReactKeyboardEvent) {
     if (creating || renaming) return; // an inline input owns the keyboard
+    // Keyboard symmetry: Enter opens the floating reader, so Esc must close it (focus stays in
+    // the list — the reader itself never takes keyboard focus).
+    if (ev.key === 'Escape' && zoom) { ev.preventDefault(); closePreview(); return; }
     const idx = selected ? visible.findIndex((e) => e.name === selected) : -1;
     if (ev.key === 'ArrowDown') {
       ev.preventDefault();
@@ -346,7 +337,7 @@ export default function FileExplorer({
       onClose={onClose}
       bodyClassName="fx-body"
     >
-      <div className="fx-root" ref={rootRef} onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
+      <div className="fx-root" onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
         onDragLeave={() => setDropActive(false)} onDrop={onDrop}>
         {/* Nav row: up · editable address · reload · home(pane cwd) */}
         <div className="fx-nav">
@@ -419,7 +410,7 @@ export default function FileExplorer({
                   key={e.name}
                   className={`fx-row${selected === e.name ? ' active' : ''}${e.broken ? ' broken' : ''}`}
                   onClick={() => { setSelected(e.name); if (e.isFile) loadPreview(joinPath(cwd, e.name)); }}
-                  onDoubleClick={() => { if (e.isDir) openEntry(e); else setZoom(true); }}
+                  onDoubleClick={() => { if (e.isDir) openEntry(e); }}
                   title={joinPath(cwd, e.name)}
                 >
                   <span className="fx-icon">{iconFor(e)}</span>
@@ -454,29 +445,6 @@ export default function FileExplorer({
           {truncated && <div className="fx-empty">项目过多，仅显示前一部分。请用过滤或进入子目录。</div>}
         </div>
 
-        {/* Preview split (draggable divider resizes it) */}
-        {preview.status !== 'idle' && preview.status !== 'none' && (
-          <>
-            <div className="fx-split" title="拖动调整预览高度（上下拖）" onPointerDown={startPreviewResize} />
-            <div className="fx-preview" style={{ height: previewH }}>
-            <div className="fx-preview-head">
-              <span className="fx-preview-path" title={previewPath}>📄 {previewPath}</span>
-              <span className="fx-preview-actions">
-                {preview.status === 'ok' && !preview.binary && (
-                  <button className="fx-act" title="Markdown / 原文" onClick={() => setPreviewMd((v) => !v)}>{previewMd ? '原文' : 'MD'}</button>
-                )}
-                {preview.status === 'ok' && <button className="fx-act" title="放大查看" onClick={() => setZoom(true)}>⛶</button>}
-                <button className="fx-act" title="复制路径" onClick={() => copyPath(previewPath)}>⧉</button>
-                <button className="fx-act" title="关闭预览" onClick={closePreview}>×</button>
-              </span>
-            </div>
-            {preview.status === 'loading' && <div className="file-note">读取中…</div>}
-            {preview.status === 'error' && <div className="file-note">读取失败：{preview.error}</div>}
-            {preview.status === 'ok' && previewBody()}
-            </div>
-          </>
-        )}
-
         {/* Footer */}
         <div className="fx-foot">
           <span className="fx-foot-count">{visible.length} 项{filter ? `（已过滤，共 ${entries.length}）` : ''}</span>
@@ -486,22 +454,29 @@ export default function FileExplorer({
         </div>
       </div>
 
-      {/* Magnify: a larger reader for the previewed file (reuses the shared Markdown renderer). */}
-      {zoom && preview.status === 'ok' && (
+      {/* Floating reader: THE file viewer (opens directly on file click, incl. its loading state). */}
+      {zoom && preview.status !== 'idle' && preview.status !== 'none' && (
         <FloatingPanel
           title={`文件预览 · ${previewPath}`}
           storageKey="tmuxdash:panel:explorer-zoom"
           defaultSize={{ w: 780, h: 580 }}
           defaultOffset={40}
-          onClose={() => setZoom(false)}
+          onClose={closePreview}
           footer={
             <>
-              <button className="btn-ghost" style={{ marginRight: 'auto' }} onClick={() => setPreviewMd((v) => !v)}>{previewMd ? '原文' : 'Markdown'}</button>
-              <button className="btn-ghost" onClick={() => copyText(preview.content || '').then((ok) => onHint(ok ? '已复制文件内容' : '复制失败'))}>复制全文</button>
+              {preview.status === 'ok' && !preview.binary && (
+                <button className="btn-ghost" style={{ marginRight: 'auto' }} onClick={() => setPreviewMd((v) => !v)}>{previewMd ? '原文' : 'Markdown'}</button>
+              )}
+              <button className="btn-ghost" onClick={() => copyPath(previewPath)}>复制路径</button>
+              {preview.status === 'ok' && !preview.binary && (
+                <button className="btn-ghost" onClick={() => copyText(preview.content || '').then((ok) => onHint(ok ? '已复制文件内容' : '复制失败'))}>复制全文</button>
+              )}
             </>
           }
         >
-          {previewBody()}
+          {preview.status === 'loading' && <div className="file-note">读取中…</div>}
+          {preview.status === 'error' && <div className="file-note">读取失败：{preview.error}</div>}
+          {preview.status === 'ok' && previewBody()}
         </FloatingPanel>
       )}
     </FloatingPanel>

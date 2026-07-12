@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from './ui/dialog';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
 
 interface Stat { ok: boolean; resolved?: string; exists?: boolean; isDir?: boolean; error?: string }
 
@@ -101,13 +105,13 @@ export default function ManualPathModal({
   }
 
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal path-modal">
-        <div className="modal-title">自定义路径新建分组</div>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="path-modal max-w-[560px]">
+        <DialogTitle>自定义路径新建分组</DialogTitle>
 
-        <label className="field-label">路径（Tab 自动补全 · 支持 ~）</label>
+        <Label className="field-label">路径（Tab 自动补全 · 支持 ~）</Label>
         <div className="path-row">
-          <input
+          <Input
             ref={inputRef}
             autoFocus
             className="path-input"
@@ -120,7 +124,7 @@ export default function ManualPathModal({
               else if (e.key === 'Enter') { e.preventDefault(); submit(); }
             }}
           />
-          <button className="btn-primary path-go" disabled={!canSubmit} onClick={submit}>{btnLabel}</button>
+          <Button className="path-go" disabled={!canSubmit} onClick={submit}>{btnLabel}</Button>
         </div>
 
         <div className="path-status small">
@@ -142,8 +146,8 @@ export default function ManualPathModal({
           </div>
         )}
 
-        <label className="field-label">分组名</label>
-        <input
+        <Label className="field-label">分组名</Label>
+        <Input
           className="path-input"
           placeholder="分组名（默认取文件夹名）"
           value={name}
@@ -153,10 +157,10 @@ export default function ManualPathModal({
         />
 
         {err && <div className="err small">{err}</div>}
-        <div className="modal-actions">
-          <button className="btn-ghost" onClick={onClose}>取消</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

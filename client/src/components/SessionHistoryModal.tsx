@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { SessionGroup } from '../types';
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from './ui/dialog';
+import { Button } from './ui/button';
 
 // Browse Claude session history (read from disk, grouped by dashboard group) and resume any
 // session — it opens a new tab in that group running `claude --resume <id>`.
@@ -33,9 +35,9 @@ export default function SessionHistoryModal({
   const fmt = (ms: number) => new Date(ms).toLocaleString();
 
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal session-modal">
-        <div className="modal-title">Claude 会话历史 · 点击在对应分组打开并 resume</div>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="session-modal max-w-[720px]">
+        <DialogTitle>Claude 会话历史 · 点击在对应分组打开并 resume</DialogTitle>
         {err && <div className="err small">{err}</div>}
         {data == null ? (
           <div className="muted small">加载中…</div>
@@ -64,10 +66,10 @@ export default function SessionHistoryModal({
             ))}
           </div>
         )}
-        <div className="modal-actions">
-          <button className="btn-ghost" onClick={onClose}>关闭</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

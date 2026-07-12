@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { useAuth } from '../auth';
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from './ui/dialog';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { getTheme, setTheme, type Theme } from '../lib/theme';
 
 // Monospace fonts offered for the terminal. Only the primary family name is stored; TerminalView
 // always appends a monospace + CJK fallback so alignment survives a font the device lacks.
@@ -40,8 +44,16 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [auto, setAuto] = useState(!!user?.scroll_auto);
   const [font, setFont] = useState(user?.term_font ?? '');
   const [opacity, setOpacity] = useState(user?.float_opacity ?? 20);
+  // Theme is a client-only preference (localStorage, no server round-trip): apply it live on click
+  // so the switch is instant, independent of the 保存 button below (which persists server settings).
+  const [theme, setThemeState] = useState<Theme>(() => getTheme());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  function chooseTheme(t: Theme) {
+    setThemeState(t);
+    setTheme(t); // persist + apply to <html> immediately
+  }
 
   async function save() {
     setErr('');
@@ -67,23 +79,36 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const validBig = auto || (Number.isFinite(big) && big >= 1 && big <= 500);
 
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal settings-modal">
-        <div className="modal-title">设置</div>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="settings-modal max-w-[560px]">
+        <DialogTitle>设置</DialogTitle>
 
-        <div className="section-title">滚动步进</div>
+        <div className="section-title">外观</div>
+        <div className="setting-row">
+          <label>主题 <span className="muted">（终端画面始终保持深色）</span></label>
+          <span className="theme-toggle">
+            <Button size="sm" variant={theme === 'dark' ? 'default' : 'ghost'} onClick={() => chooseTheme('dark')}>
+              🌙 深色
+            </Button>
+            <Button size="sm" variant={theme === 'light' ? 'default' : 'ghost'} onClick={() => chooseTheme('light')}>
+              ☀️ 浅色
+            </Button>
+          </span>
+        </div>
+
+        <div className="section-title" style={{ marginTop: 4 }}>滚动步进</div>
         <label className="setting-check">
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
           <span>自动（按界面行数计算）<span className="muted">小步 = 行数×0.25 向上取整，大步 = 行数−10</span></span>
         </label>
         <div className="setting-row">
           <label>小步 <span className="muted">（▲ / ▼ 每次滚动行数，1–100）</span></label>
-          <input type="number" min={1} max={100} disabled={auto} value={Number.isFinite(small) ? small : ''}
+          <Input type="number" min={1} max={100} disabled={auto} value={Number.isFinite(small) ? small : ''}
             onChange={(e) => setSmall(Number(e.target.value))} />
         </div>
         <div className="setting-row">
           <label>大步 <span className="muted">（▲▲ / ▼▼ 每次滚动行数，1–500）</span></label>
-          <input type="number" min={1} max={500} disabled={auto} value={Number.isFinite(big) ? big : ''}
+          <Input type="number" min={1} max={500} disabled={auto} value={Number.isFinite(big) ? big : ''}
             onChange={(e) => setBig(Number(e.target.value))} />
         </div>
         <div className="small muted">提示：长按滚动按钮可连续滚动。普通 shell 滚轮/按钮会滚动 tmux 历史。</div>
@@ -117,11 +142,11 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
 
         {(!validSmall || !validBig) && <div className="err small">步进需在范围内（小 1–100，大 1–500）</div>}
         {err && <div className="err small">{err}</div>}
-        <div className="modal-actions">
-          <button className="btn-ghost" onClick={onClose}>取消</button>
-          <button className="btn-primary" disabled={busy || !validSmall || !validBig} onClick={save}>保存</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button disabled={busy || !validSmall || !validBig} onClick={save}>保存</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

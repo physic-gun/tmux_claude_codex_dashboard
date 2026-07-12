@@ -224,6 +224,7 @@ export default function TerminalView({
   fontFamily,
   selectMode = false,
   mobile = false,
+  active = true,
 }: {
   gid: number;
   windowName: string;
@@ -233,6 +234,11 @@ export default function TerminalView({
   fontFamily?: string;
   selectMode?: boolean;
   mobile?: boolean;
+  // Terminal-pool mode (Dashboard keeps every visited tab mounted, hidden via display:none, so
+  // switching back is instant). `active` = this tab is the visible one. Inactive instances stay
+  // connected and keep buffering output, but must NOT act on window-level events (Esc/gesture
+  // handlers), write the system clipboard, steal focus, or push a 0×0 resize to the pty.
+  active?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -285,6 +291,10 @@ export default function TerminalView({
   // Live mobile flag for handlers that must not re-run the terminal effect.
   const mobileRef = useRef(mobile);
   mobileRef.current = mobile;
+  // Live `active` flag (terminal pool): window-level handlers and clipboard writes must no-op on
+  // hidden instances without re-running the terminal effect.
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState('');
@@ -332,6 +342,9 @@ export default function TerminalView({
   useOverlayStack(overlayStackRef, 'explorer', explorerOpen);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Pool: a HIDDEN instance must never consume Esc — its stopPropagation would eat the key
+      // before the visible tab's handler (or the pty) ever saw it.
+      if (!activeRef.current) return;
       if (e.key !== 'Escape') return;
       const stack = overlayStackRef.current;
       if (!stack.length) return; // nothing open → let Esc reach the terminal (claude)
@@ -351,6 +364,7 @@ export default function TerminalView({
   useEffect(() => {
     if (!clipListOpen) return;
     const onDown = (e: PointerEvent) => {
+      if (!activeRef.current) return; // pool: hidden instance — leave its (hidden) panel state alone
       const t = e.target as HTMLElement | null;
       if (t && t.closest('.clip-panel, .cli-fab')) return;
       setClipListOpen(false);
@@ -406,7 +420,9 @@ export default function TerminalView({
   const retryClipWrite = (attempt: number) => {
     clipRetryRef.current = true;
     const t = pendingClipRef.current;
-    if (!t || attempt >= 40) { clipRetryRef.current = false; return; } // ~6s; blurred ticks are cheap no-ops
+    // Pool: stop the moment this tab goes hidden — a background retry must never write the
+    // system clipboard off another tab's user activation. (The relay list keeps the text.)
+    if (!activeRef.current || !t || attempt >= 40) { clipRetryRef.current = false; return; } // ~6s; blurred ticks are cheap no-ops
     writeSysClip(t).then((ok) => {
       if (ok) { pendingClipRef.current = ''; clipRetryRef.current = false; showHintRef.current('✓ 已写入系统剪贴板'); }
       else window.setTimeout(() => retryClipWrite(attempt + 1), 150);
@@ -425,6 +441,10 @@ export default function TerminalView({
       saveClips(gid, windowName, next);
       return next;
     });
+    // Pool: a copy arriving in a HIDDEN tab goes to its relay list only — a background claude
+    // must never clobber the system clipboard (nor arm the gesture-flush) while the user works
+    // in another tab. The 📋/📥 relay is the designed recovery path for exactly this.
+    if (!activeRef.current) return;
     writeSysClip(text).then((ok) => {
       if (ok) { pendingClipRef.current = ''; showHintRef.current('✓ 已写入系统剪贴板（同时存入中转）'); }
       else {
@@ -493,7 +513,8 @@ export default function TerminalView({
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: composeFont(fontFamily),
-      // Persisted so the A+/A− zoom carries across tab switches (this component remounts per tab).
+      // Persisted so the A+/A− zoom carries across tabs/reloads. Pooled instances stay mounted
+      // across switches, so the [active] effect re-reads this on every re-activation.
       fontSize: Number(localStorage.getItem('tmuxdash:fontSize')) || 13,
       theme: { background: '#1a1b26', foreground: '#c0caf5' },
       scrollback: 5000,
@@ -657,6 +678,7 @@ export default function TerminalView({
     // (a click or keypress, anywhere) supplies the activation the write needs. Cheap no-op when
     // nothing is pending. Passive — never preventDefault/stopPropagation, so it's transparent.
     const flushPendingClip = () => {
+      if (!activeRef.current) return; // pool: only the visible tab may write the system clipboard
       const t = pendingClipRef.current;
       if (!t) return;
       pendingClipRef.current = '';
@@ -889,7 +911,10 @@ export default function TerminalView({
     el?.addEventListener('touchcancel', onTouchCancelSel);
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url =
+    // Built per-connect (not once): the server spawns the viewer pty at the cols/rows in the url,
+    // and a pooled tab can reconnect long after mount (server restart while hidden) — always hand
+    // it the grid xterm currently has, not the mount-time one.
+    const wsUrl = () =>
       `${proto}://${location.host}/ws/terminal?token=${encodeURIComponent(getToken() || '')}` +
       `&gid=${gid}&window=${encodeURIComponent(windowName)}&cols=${term.cols}&rows=${term.rows}`;
     // Reconnect bookkeeping (see connect() below).
@@ -926,7 +951,7 @@ export default function TerminalView({
     // so the terminal re-attaches to the same window without a manual reload.
     let osc52Carry = '';
     const connect = () => {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(wsUrl());
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
@@ -947,7 +972,14 @@ export default function TerminalView({
         } catch {}
       };
       // Don't auto-focus on mobile — focusing is the "enter input state" we're suppressing there.
-      ws.onopen = () => { retries = 0; doFit(); if (!mobileRef.current) term.focus(); };
+      ws.onopen = () => {
+        retries = 0;
+        doFit();
+        // Hidden pooled tab: the fit above was guard-skipped — still sync the fresh pty to the
+        // grid xterm already has, so output buffered while hidden wraps at the right width.
+        try { ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch { /* not open */ }
+        if (!mobileRef.current && activeRef.current) term.focus();
+      };
       ws.onclose = () => {
         if (disposed) return;
         try { term.write('\r\n\x1b[33m[连接断开，重连中…]\x1b[0m\r\n'); } catch {}
@@ -971,6 +1003,11 @@ export default function TerminalView({
     };
 
     const doFit = () => {
+      // Pool: never fit while hidden (display:none → 0×0) — FitAddon would propose a tiny grid
+      // and we'd shrink the remote tmux window to ~2×1 under the running app. The ResizeObserver
+      // plus the `active` effect refit the moment the tab is shown again.
+      const host = ref.current;
+      if (!host || host.clientWidth < 20 || host.clientHeight < 20) return;
       try {
         fit.fit();
         setRows(term.rows); // keep the displayed row count (and auto steps) in sync
@@ -1042,6 +1079,24 @@ export default function TerminalView({
     else setKbdOpen(false);
   }, [mobile]);
 
+  // Pool activation/deactivation. Deactivation cancels any pending system-clipboard write — the
+  // relay list keeps the text, and a stale flush on return would clobber whatever the user copied
+  // in the meantime (it also starves the bounded retry loop). Re-activation re-syncs the font zoom
+  // (A+/A− in another tab updates localStorage, not this mounted instance), refits (the container
+  // was 0×0 while hidden, all fits skipped), and refocuses — unless a restored floating panel is
+  // open, which should keep receiving the keystrokes instead of the pty behind it.
+  useEffect(() => {
+    if (!active) {
+      pendingClipRef.current = '';
+      return;
+    }
+    const term = termRef.current;
+    const fs = Number(localStorage.getItem('tmuxdash:fontSize')) || 13;
+    if (term && term.options.fontSize !== fs) term.options.fontSize = fs;
+    doFitRef.current();
+    if (!mobileRef.current && overlayStackRef.current.length === 0) term?.focus();
+  }, [active]);
+
   // The on-screen keyboard docks below the terminal, so opening/closing it changes the CLI
   // height — refit so cols/rows and the remote pty follow.
   useEffect(() => { doFitRef.current(); }, [kbdOpen]);
@@ -1100,7 +1155,10 @@ export default function TerminalView({
     stopRepeat();
     scrollByRef.current(dir, n);
     repeatRef.current.t = window.setTimeout(() => {
-      repeatRef.current.i = window.setInterval(() => scrollByRef.current(dir, n), 110);
+      // Gate each tick on `active`: if the slot is hidden mid-hold (multi-input edge: a touch tap
+      // on another tab while the mouse holds an arrow), mouseleave never fires on a display:none
+      // element and the repeat would otherwise scroll the hidden viewer forever.
+      repeatRef.current.i = window.setInterval(() => { if (activeRef.current) scrollByRef.current(dir, n); }, 110);
     }, 320);
   }
   useEffect(() => stopRepeat, []);
