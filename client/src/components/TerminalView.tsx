@@ -252,6 +252,10 @@ export default function TerminalView({
   // Refit the terminal (wired up inside the effect); called when the font family changes so
   // cols/rows + the remote pty size follow the new glyph metrics.
   const doFitRef = useRef<() => void>(() => {});
+  // Flush output buffered while this tab was hidden (pool — see the ws.onmessage branch inside
+  // the terminal effect); called by the [active] reactivation effect so the buffer is fully
+  // written the instant the tab is shown, not after the next scheduled batch.
+  const flushHiddenRef = useRef<() => void>(() => {});
   // Live mouse state of the app in this pane, parsed from its output: whether it has mouse
   // reporting on (→ forward the wheel to it) and whether it speaks SGR (1006) encoding.
   const appMouseRef = useRef(false);
@@ -950,6 +954,22 @@ export default function TerminalView({
     // Connect, and auto-reconnect with backoff if the socket drops (e.g. the server restarts),
     // so the terminal re-attaches to the same window without a manual reload.
     let osc52Carry = '';
+    // Pool: while HIDDEN, coalesce output instead of writing every message straight to xterm.
+    // term.write() runs a full ANSI-parse + buffer mutation on the single browser main thread —
+    // with several visited-but-hidden tabs running busy agents (spinners/streaming text), that
+    // work competes directly with the VISIBLE tab's keystrokes for the thread, which is what
+    // makes typing feel laggy even though input itself is cheap. Buffering + batching the write
+    // every ~150ms cuts a hidden tab's write frequency from "every message" to a few times a
+    // second; the [active] effect flushes immediately on reactivation so nothing is stale when
+    // the user actually looks at the tab. Mouse-state tracking and OSC52 capture (both cheap,
+    // and the latter feeds the always-live clipboard relay) still run on every message regardless.
+    let hiddenBuf = '';
+    let hiddenFlushTimer: number | undefined;
+    const flushHidden = () => {
+      if (hiddenFlushTimer != null) { window.clearTimeout(hiddenFlushTimer); hiddenFlushTimer = undefined; }
+      if (hiddenBuf) { const buf = hiddenBuf; hiddenBuf = ''; term.write(buf); }
+    };
+    flushHiddenRef.current = flushHidden;
     const connect = () => {
       const ws = new WebSocket(wsUrl());
       wsRef.current = ws;
@@ -965,7 +985,13 @@ export default function TerminalView({
             for (const t of texts) onOsc52Ref.current(t);
             // Always strip the app's mouse-tracking enables so xterm stays out of mouse mode
             // and a plain drag selects text locally; the wheel is forwarded back separately.
-            term.write(m.data.replace(MOUSE_ENABLE_RE, ''));
+            const cleaned = m.data.replace(MOUSE_ENABLE_RE, '');
+            if (activeRef.current) {
+              term.write(cleaned);
+            } else {
+              hiddenBuf += cleaned;
+              if (hiddenFlushTimer == null) hiddenFlushTimer = window.setTimeout(flushHidden, 150);
+            }
           } else if (m.type === 'error') {
             term.write(`\r\n\x1b[31m[错误] ${m.data}\x1b[0m\r\n`);
           }
@@ -1038,6 +1064,7 @@ export default function TerminalView({
     return () => {
       disposed = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (hiddenFlushTimer != null) window.clearTimeout(hiddenFlushTimer);
       ro.disconnect();
       dataSub.dispose();
       el?.removeEventListener('mouseup', onMouseUp);
@@ -1091,6 +1118,7 @@ export default function TerminalView({
       return;
     }
     const term = termRef.current;
+    flushHiddenRef.current(); // write whatever accumulated while hidden before the refit/focus below
     const fs = Number(localStorage.getItem('tmuxdash:fontSize')) || 13;
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs;
     doFitRef.current();
