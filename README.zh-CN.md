@@ -144,6 +144,7 @@ tmux -L dashsvc new-session -d -s server \
 REPO=/absolute/path/to/tmux_dashboard
 PORT=${PORT:-6880}
 HEALTH_URL=${HEALTH_URL:-http://localhost:$PORT/api/health}
+TMUX_SOCKET=${TMUX_SOCKET:-tmuxdash}
 set -- $(lsof -nP -tiTCP:$PORT -sTCP:LISTEN | sort -u)
 [ "$#" -eq 1 ] || { echo "监听 PID 不是唯一值" >&2; exit 1; }
 pid=$1
@@ -151,18 +152,26 @@ case "$pid" in ''|*[!0-9]*) exit 1 ;; esac
 [ "$pid" -gt 1 ] || exit 1
 cmd=$(ps -p "$pid" -o command=)
 case "$cmd" in *"node src/server.js"*) ;; *) echo "进程不匹配: $cmd" >&2; exit 1 ;; esac
+ppid=$(ps -p "$pid" -o ppid= | tr -d ' ')
+case "$ppid" in ''|*[!0-9]*) exit 1 ;; esac
+parent_cmd=$(ps -p "$ppid" -o command=)
+case "$parent_cmd" in *"while true"*"node src/server.js"*) ;; *) echo "supervisor 不匹配: $parent_cmd" >&2; exit 1 ;; esac
 cwd=$(lsof -a -p "$pid" -d cwd -Fn | sed -n 's/^n//p')
 [ "$cwd" = "$REPO/server" ] || { echo "cwd 不匹配: $cwd" >&2; exit 1; }
-tmux_before=$(tmux -N -L tmuxdash list-sessions -F '#{pid}' | sort -u)
+tmux_before=$(tmux -N -L "$TMUX_SOCKET" list-sessions -F '#{pid}' | sort -u)
 case "$tmux_before" in ''|*[!0-9]*) echo "tmux PID 无效" >&2; exit 1 ;; esac
-/bin/kill -TERM "$pid"
+/bin/kill -TERM "$pid" || { echo "无法向 Node 发送 TERM" >&2; exit 1; }
 healthy=0
-for _ in $(seq 1 30); do
-  if curl -ksSf "$HEALTH_URL" >/dev/null; then healthy=1; break; fi
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  if curl -kLsSf "$HEALTH_URL" >/dev/null; then healthy=1; break; fi
+  attempt=$((attempt + 1))
   sleep 1
 done
 [ "$healthy" -eq 1 ] || { echo "Dashboard 未恢复" >&2; exit 1; }
-tmux_after=$(tmux -N -L tmuxdash list-sessions -F '#{pid}' | sort -u)
+set -- $(lsof -nP -tiTCP:$PORT -sTCP:LISTEN | sort -u)
+[ "$#" -eq 1 ] && [ "$1" != "$pid" ] || { echo "Node PID 未变化" >&2; exit 1; }
+tmux_after=$(tmux -N -L "$TMUX_SOCKET" list-sessions -F '#{pid}' | sort -u)
 [ "$tmux_before" = "$tmux_after" ] || { echo "tmux PID 发生变化" >&2; exit 1; }
 ```
 
