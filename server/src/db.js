@@ -71,8 +71,8 @@ function ensureColumn(table, name, ddl) {
 ensureColumn('groups', 'path', 'path TEXT');
 // User-defined group ordering in the sidebar (0 keeps the legacy created_at order until reordered).
 ensureColumn('groups', 'sort_order', 'sort_order INTEGER NOT NULL DEFAULT 0');
-// Last-seen claude session name (pane title) for a window, persisted so the tab label and
-// the searchable name survive a tmux restart — and so closed/dead tabs can be restored.
+// Last-seen agent session name (Claude pane title or Codex thread title), persisted so the tab
+// label and searchable name survive a tmux restart — and so closed/dead tabs can be restored.
 ensureColumn('windows', 'title', 'title TEXT');
 // The Claude session id (UUID) a window was last running, captured heuristically from the
 // pane's cwd, so a tab can be matched back to its conversation after a crash.

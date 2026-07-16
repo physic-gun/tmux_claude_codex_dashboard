@@ -125,7 +125,7 @@ export default function TabBar({
     }
   }
 
-  // A tab's label is its claude session title when it has one, else the window name. If the
+  // A tab's label is its agent session title when it has one, else the window name. If the
   // SAME title is shared by several tabs (e.g. fresh claude windows all reporting the host's
   // default title, or two sessions with the same summary), that title can't tell them apart —
   // fall back to the unique window name so two tabs are never indistinguishable.

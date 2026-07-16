@@ -193,7 +193,7 @@ export default function Dashboard() {
   // optimistic order with a stale (pre-commit) server response.
   const reorderingRef = useRef(false);
 
-  // Poll so tab labels track each window's live pane title (e.g. claude's session name).
+  // Poll so tab labels track each window's live agent title (Claude OSC or Codex thread state).
   useEffect(() => {
     if (activeGid == null) return;
     const id = setInterval(() => {

@@ -1,5 +1,7 @@
 import 'dotenv/config';
 
+const envFlag = (value) => /^(1|true|yes|on)$/i.test(String(value || ''));
+
 export const config = {
   port: Number(process.env.PORT || 6880),
   // No insecure literal default: an unset/short secret triggers an auto-generated,
@@ -14,6 +16,9 @@ export const config = {
   publicDir: process.env.PUBLIC_DIR || '',
   // Dedicated tmux server socket so this app never collides with a user's own tmux.
   tmuxSocket: process.env.TMUX_SOCKET || 'tmuxdash',
+  // Production systemd deployments supervise tmux in a separate unit. In that mode every client
+  // uses tmux -N so Node can never recreate the server inside the dashboard service's cgroup.
+  tmuxManagedExternally: envFlag(process.env.TMUX_MANAGED_EXTERNALLY),
   // Root for per-user workspaces. New windows start in <root>/<username>/<groupname>.
   // Empty -> don't set a working directory (tmux uses the default).
   workspaceRoot: process.env.WORKSPACE_ROOT || '',
@@ -21,6 +26,6 @@ export const config = {
   // context, so the system clipboard / claude's OSC52 auto-copy work over the LAN.
   tlsCert: process.env.TLS_CERT || '',
   tlsKey: process.env.TLS_KEY || '',
-  // Upper bound for web[[1-5]] style window expansion.
+  // Upper bound for name[[1-5]] style window expansion.
   maxWindowExpansion: Number(process.env.MAX_WINDOW_EXPANSION || 50),
 };

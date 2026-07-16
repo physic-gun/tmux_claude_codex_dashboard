@@ -10,6 +10,8 @@ import * as tmux from '../tmux.js';
 import { sessionNameForGroup, groupSessionCwd } from '../ws.js';
 import { ensureGroupDirFor, groupDirFilesFor, prepareCustomDir, worktreesRootFor } from '../workspace.js';
 import { latestSessionId } from '../sessions.js';
+import { codexSessionsForWindows } from '../codexSessions.js';
+import { isClaudePane } from '../scrollRouting.js';
 import {
   findGitRepos, isGitRepo, repoStatus, repoFiles, fileDiff, gitCommit, gitPull, gitPush, gitFetch,
   ensureRepoInited, addWorktree, removeWorktree, refreshNestedRepoIgnore, branchExists,
@@ -62,7 +64,7 @@ async function archiveWindowPane(group, windowName, meta = {}) {
   }
 }
 
-// Expand a "kiaa[[1-5]]" / "kiaa[[n]]" pattern into concrete window names.
+// Expand a "name[[1-5]]" / "name[[n]]" pattern into concrete window names.
 // "[[n]]" defaults to the range 1-5; "[[a-b]]" uses the given inclusive range.
 function expandPattern(input) {
   const m = input.match(/\[\[(?:(\d+)-(\d+)|n)\]\]/);
@@ -180,8 +182,8 @@ router.delete('/:gid', loadGroup, ah(async (req, res) => {
 
 // ---- windows (tabs) ----
 
-// A bare shell's pane title is just the hostname/cwd, so it's ignored — only a real program
-// (e.g. claude) gives a meaningful, persistable title.
+// A bare shell's pane title is just the hostname/cwd, so it is ignored. Claude supplies a useful
+// OSC title; Codex titles are resolved separately from its local thread state.
 const SHELLS = new Set(['zsh', '-zsh', 'bash', '-bash', 'sh', 'dash', 'fish', 'tcsh', 'ksh', 'login']);
 
 // The shell's DEFAULT window title (the machine hostname, or `user@host[:cwd]`) leaks through
@@ -271,17 +273,38 @@ router.get('/:gid/windows', loadGroup, ah(async (req, res) => {
     }
   }
 
-  // Persist each running window's claude session title AND bind it to the claude session id
-  // (the most-recently-written session file in the pane's cwd), so both survive a tmux
-  // restart and the tab can be matched back to its conversation.
+  // Codex's pane_title defaults to a spinner/project name, not the thread title. Bind each Codex
+  // pane to the exact root rollout it has open, then read threads.title from Codex's state DB.
+  // This remains exact when several Codex sessions share a cwd or the process owns subagents.
+  const codexByPane = await codexSessionsForWindows(live);
+
+  // Persist each running agent's display title. Claude also keeps its historical session-id
+  // binding; Codex deliberately clears that Claude-only column instead of mixing id namespaces.
   for (const w of live) {
+    const codex = codexByPane.get(w.paneId);
+    if (codex?.detected) {
+      if (codex.title) {
+        db.prepare('UPDATE windows SET title = ?, session_id = NULL WHERE group_id = ? AND name = ?')
+          .run(codex.title, req.group.id, w.name);
+      } else {
+        // Never display a previous Claude/Codex title while a newly detected Codex thread has no
+        // readable title yet. Falling back to the stable window name is honest and unambiguous.
+        db.prepare('UPDATE windows SET title = NULL, session_id = NULL WHERE group_id = ? AND name = ?')
+          .run(req.group.id, w.name);
+      }
+      continue;
+    }
     if (meaningfulTitle(w)) {
       db.prepare('UPDATE windows SET title = ? WHERE group_id = ? AND name = ?')
         .run(w.title, req.group.id, w.name);
-      const sid = w.cwd ? latestSessionId(w.cwd) : null;
-      if (sid) {
-        db.prepare('UPDATE windows SET session_id = ? WHERE group_id = ? AND name = ?')
-          .run(sid, req.group.id, w.name);
+      // `session_id` is a Claude-only field. Only a real Claude foreground command may update it;
+      // other programs with an OSC title must not inherit the newest Claude file in the same cwd.
+      if (isClaudePane(w.command, w.title)) {
+        const sid = w.cwd ? latestSessionId(w.cwd) : null;
+        if (sid) {
+          db.prepare('UPDATE windows SET session_id = ? WHERE group_id = ? AND name = ?')
+            .run(sid, req.group.id, w.name);
+        }
       }
     }
   }
@@ -289,10 +312,14 @@ router.get('/:gid/windows', loadGroup, ah(async (req, res) => {
   const all = db
     .prepare('SELECT name, is_open, title, session_id, branch FROM windows WHERE group_id = ? ORDER BY sort_order, id')
     .all(req.group.id);
-  // Tab labels: prefer the live claude title; fall back to the persisted one so a restored
-  // (now-fresh-shell) tab still shows the claude session name it last ran.
+  // Tab labels: prefer the live Codex/Claude title; fall back to the persisted one so a restored
+  // (now-fresh-shell) tab still shows the agent session name it last ran.
   const liveTitle = {};
-  for (const w of live) if (meaningfulTitle(w)) liveTitle[w.name] = w.title;
+  for (const w of live) {
+    const codex = codexByPane.get(w.paneId);
+    if (codex?.title) liveTitle[w.name] = codex.title;
+    else if (!codex?.detected && meaningfulTitle(w)) liveTitle[w.name] = w.title;
+  }
   const titles = {};
   const sessions = {};
   const branches = {};

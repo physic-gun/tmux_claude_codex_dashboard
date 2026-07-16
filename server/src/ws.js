@@ -5,8 +5,8 @@ import { randomUUID } from 'crypto';
 import { verifyTokenStr, getUserById } from './auth.js';
 import { db } from './db.js';
 import * as tmux from './tmux.js';
-import { config } from './config.js';
 import { ensureGroupDirFor } from './workspace.js';
+import { sgrWheel, shouldUseNativeWheel } from './scrollRouting.js';
 
 const { spawn } = nodePty;
 
@@ -151,10 +151,33 @@ export function setupWebSocket(server) {
     // copy-mode, then goes through. Self-heals a pane that got stuck in copy-mode (e.g. a scroll
     // landed during the brief window an app had torn down its alt-screen).
     let inCopyMode = false;
-    // Non-null only during the async copy-mode cancel: buffers keystrokes so they flush in order
-    // (and none are dropped) once the cancel lands — the cancel and the pty write travel over
-    // different channels, so without this a fast follow-up key could overtake the first.
-    let resumeBuf = null;
+    // tmux copy-mode operations and PTY writes travel over different channels. Serialize both so
+    // a key pressed immediately after a wheel event cannot overtake copy-mode cancel and vanish.
+    let ioQueue = Promise.resolve();
+    let paneStateCache = null;
+    let paneStateCacheUntil = 0;
+    const enqueueIo = (fn) => {
+      ioQueue = ioQueue.then(fn, fn).catch(() => {});
+    };
+
+    const readPaneState = async () => {
+      const now = Date.now();
+      if (paneStateCache && now < paneStateCacheUntil) return paneStateCache;
+      paneStateCache = await tmux.getViewerPaneState(clientSession);
+      paneStateCacheUntil = Date.now() + 50;
+      return paneStateCache;
+    };
+
+    const writeInput = async (data) => {
+      if (!data || !ptyProc) return;
+      // Input may start/exit a foreground app, so the next wheel must re-check the pane.
+      paneStateCacheUntil = 0;
+      if (inCopyMode) {
+        inCopyMode = false;
+        await tmux.cancelCopyMode(clientSession);
+      }
+      ptyProc.write(data);
+    };
 
     const cleanup = () => {
       if (closed) return;
@@ -196,7 +219,7 @@ export function setupWebSocket(server) {
         if (closed) { tmux.killSession(clientSession); return; }
         await tmux.selectWindow(clientSession, windowName);
 
-        ptyProc = spawnPtyTracked('tmux', ['-L', config.tmuxSocket, 'attach-session', '-t', clientSession], {
+        ptyProc = spawnPtyTracked('tmux', tmux.clientArgs(['attach-session', '-t', clientSession]), {
           name: 'xterm-256color',
           cols,
           rows,
@@ -221,29 +244,39 @@ export function setupWebSocket(server) {
           let msg;
           try { msg = JSON.parse(raw.toString()); } catch { return; }
           if (msg.type === 'input') {
-            if (resumeBuf) {
-              resumeBuf.push(msg.data); // cancel in flight — queue in order, flushed below
-            } else if (inCopyMode) {
-              // A prior wheel scroll left the viewer in copy-mode; exit it first so this key
-              // reaches the app instead of being eaten as a copy-mode command. Buffer this and
-              // any keys that arrive during the async cancel, then flush them in order.
-              inCopyMode = false;
-              resumeBuf = [msg.data];
-              tmux.cancelCopyMode(clientSession).finally(() => {
-                const buf = resumeBuf;
-                resumeBuf = null;
-                try { for (const d of buf) ptyProc.write(d); } catch {}
-              });
-            } else {
-              ptyProc.write(msg.data);
-            }
+            enqueueIo(() => writeInput(typeof msg.data === 'string' ? msg.data : ''));
           } else if (msg.type === 'resize') {
             try { ptyProc.resize(Math.max(1, msg.cols | 0), Math.max(1, msg.rows | 0)); } catch {}
           } else if (msg.type === 'scroll') {
-            // Plain-shell scrollback lives in tmux; scroll the viewer's copy-mode history.
-            // Scrolling up enters copy-mode; remember it so the next keystroke can restore input.
-            if (msg.dir < 0) inCopyMode = true;
-            tmux.scrollViewer(clientSession, msg.dir < 0 ? -1 : 1, msg.n | 0);
+            enqueueIo(async () => {
+              const dir = msg.dir < 0 ? -1 : 1;
+              const count = Math.max(1, Math.min(1000, msg.n | 0));
+              // Always query the real pane state. The browser can miss Claude's mouse-enable escape
+              // sequence during a reconnect/redraw, so its mouseSgr value is only a hint. Checking
+              // the foreground command server-side also prevents a stale hint from reaching Codex
+              // or a shell after Claude exits.
+              const state = msg.forceCopy ? null : await readPaneState();
+              if (state?.inMode) inCopyMode = true;
+
+              if (shouldUseNativeWheel({
+                command: state?.command,
+                title: state?.title,
+                forceCopy: msg.forceCopy,
+                clientMouseSgr: msg.mouseSgr,
+                mouseAny: state?.mouseAny,
+                mouseSgr: state?.mouseSgr,
+              })) {
+                const col = Math.max(1, Math.min(state.width, msg.col | 0 || Math.ceil(state.width / 2)));
+                const row = Math.max(1, Math.min(state.height, msg.row | 0 || Math.ceil(state.height / 2)));
+                await writeInput(sgrWheel(dir, count, col, row));
+                return;
+              }
+
+              // Every non-Claude foreground program uses viewer-local tmux history. This includes
+              // Codex, shells, and alternate-screen TUIs; no wheel event falls through as Up/Down.
+              if (dir < 0) inCopyMode = true;
+              await tmux.scrollViewer(clientSession, dir, count);
+            });
           }
         });
       } catch (e) {

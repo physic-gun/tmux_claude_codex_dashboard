@@ -3,13 +3,21 @@ import { promisify } from 'util';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
+import { buildTmuxArgs } from './tmuxArgs.js';
 
 const execFileP = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // `-f` makes a freshly-started tmux server load our headless config (status off,
 // fast escape-time, truecolor) so attached clients render TUIs cleanly.
 const CONF = path.resolve(__dirname, '../tmux.conf');
-const SOCK = ['-L', config.tmuxSocket, '-f', CONF];
+
+export function clientArgs(args = []) {
+  return buildTmuxArgs({
+    socket: config.tmuxSocket,
+    conf: CONF,
+    managedExternally: config.tmuxManagedExternally,
+  }, args);
+}
 
 // The dashboard's tmux server inherits Claude Code's session-marker env vars when the service is
 // (re)started from inside a Claude Code session (CLAUDECODE / CLAUDE_CODE_CHILD_SESSION /
@@ -40,7 +48,7 @@ async function run(args, { ignoreError = false } = {}) {
     // timeout: every tmux op here is local + instant; a 15s cap means a wedged tmux server can
     // never hang a request or the periodic archiver loop (it kills the child and rejects instead).
     // maxBuffer 8MB: capture-pane of a wide, full-history pane can exceed 4MB.
-    const { stdout } = await execFileP('tmux', [...SOCK, ...args], {
+    const { stdout } = await execFileP('tmux', clientArgs(args), {
       env: TMUX_ENV,
       maxBuffer: 8 * 1024 * 1024,
       timeout: 15_000,
@@ -60,6 +68,15 @@ const wTarget = (session, name) => `=${session}:=${name}`;
 export async function sessionExists(session) {
   try {
     await run(['has-session', '-t', sTarget(session)]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function serverReady() {
+  try {
+    await run(['show-options', '-gqv', 'exit-empty']);
     return true;
   } catch {
     return false;
@@ -93,7 +110,7 @@ export async function listWindows(session) {
       '-t',
       sTarget(session),
       '-F',
-      '#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}',
+      '#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}',
     ],
     { ignoreError: true }
   );
@@ -102,13 +119,15 @@ export async function listWindows(session) {
     .filter(Boolean)
     .map((line) => {
       const parts = line.split('\t');
-      const [id, index, name, active, command, cwd] = parts;
-      const title = parts.slice(6).join('\t'); // titles may contain tabs, so keep them last
+      const [id, index, name, active, paneId, panePid, command, cwd] = parts;
+      const title = parts.slice(8).join('\t'); // titles may contain tabs, so keep them last
       return {
         id, // tmux window id like "@3" — unambiguous (unlike a numeric name, which reads as an index)
         index: Number(index),
         name,
         active: active === '1',
+        paneId: paneId || '',
+        panePid: Number(panePid) || 0,
         command: command || '',
         cwd: cwd || '',
         title: title || '',
@@ -169,6 +188,36 @@ export async function scrollViewer(viewer, dir, n) {
 // "dead" to input until it's cancelled. Idempotent — a no-op (ignored) when not in a mode.
 export async function cancelCopyMode(viewer) {
   await run(['send-keys', '-t', viewer, '-X', 'cancel'], { ignoreError: true });
+}
+
+// The browser is attached to a grouped tmux session, so xterm's own normal/alternate buffer says
+// what the OUTER tmux client is doing, not what the pane's foreground program is doing. Query tmux
+// directly when routing a wheel gesture. This is intentionally viewer-scoped: copy-mode belongs to
+// one attached viewer and must never disturb another browser watching the same base window.
+export async function getViewerPaneState(viewer) {
+  const out = await run(
+    [
+      'display-message',
+      '-p',
+      '-t',
+      viewer,
+      '-F',
+      '#{pane_current_command}\t#{mouse_any_flag}\t#{mouse_sgr_flag}\t#{pane_in_mode}\t#{pane_width}\t#{pane_height}\t#{pane_title}',
+    ],
+    { ignoreError: true }
+  );
+  if (!out.trim()) return null;
+  const parts = out.trimEnd().split('\t');
+  const [command, mouseAny, mouseSgr, inMode, width, height] = parts;
+  return {
+    command: command || '',
+    mouseAny: mouseAny === '1',
+    mouseSgr: mouseSgr === '1',
+    inMode: inMode === '1',
+    width: Math.max(1, Number(width) || 1),
+    height: Math.max(1, Number(height) || 1),
+    title: parts.slice(6).join('\t'),
+  };
 }
 
 export async function sendKeys(session, name, command) {

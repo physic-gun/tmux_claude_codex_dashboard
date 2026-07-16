@@ -22,7 +22,7 @@ export interface Group {
 export interface WindowsResp {
   open: string[];
   background: string[];
-  // live pane titles (e.g. claude's session name) keyed by window name
+  // live/persisted agent titles (Claude or Codex session name) keyed by window name
   titles?: Record<string, string>;
   // claude session id bound to each window, keyed by window name
   sessions?: Record<string, string>;

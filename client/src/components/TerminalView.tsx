@@ -261,11 +261,9 @@ export default function TerminalView({
   const appMouseRef = useRef(false);
   const sgrMouseRef = useRef(false);
   // "Sticky" view of the above: set once the app enables mouse/SGR on the alternate screen,
-  // cleared only when it tears the alt screen down. tmux re-sends the enables on every
-  // (re)attach/redraw — but it DISABLES then re-ENABLES them, so the live flags above flip off
-  // briefly on each tab switch/redraw (and a frame-split can drop an enable entirely). Without
-  // the sticky flag the wheel would, in that window, fall through to xterm's alternate-scroll
-  // and reach claude as ARROW KEYS ("scroll wheel is sending arrow keys · use PgUp/PgDn").
+  // cleared only when it tears the alt screen down. tmux re-sends the enables as disable-then-
+  // enable on redraw, so the live flags briefly flip off; the sticky value is sent to the server
+  // as a hint while the server independently verifies that the foreground command is Claude.
   const appMouseSeenRef = useRef(false);
   const sgrSeenRef = useRef(false);
   // True while an Alt/Option-drag is being forwarded to the app as mouse events (vs a local
@@ -717,62 +715,29 @@ export default function TerminalView({
     el?.addEventListener('dragover', onDragOverEvt);
     el?.addEventListener('drop', onDropEvt);
 
-    // Forward the wheel to the app (claude) while it has mouse reporting on, so it scrolls
-    // its own view even though we stripped its mouse-enable to keep drag-selection working.
-    // At a plain shell (no app mouse mode) — or with Shift held (terminal convention to
-    // reach the local scrollback past an app that grabbed the mouse) — we leave the wheel
-    // alone, so xterm scrolls its own scrollback. Capture phase + stopPropagation pre-empts
-    // xterm's own wheel handler.
-    // Build `n` SGR (1006) wheel reports in `dir` (-1 up / +1 down) at cell (col,row). We
-    // ONLY ever emit SGR — never legacy X10 (ESC[M + raw bytes), whose coordinate bytes leak
-    // as literal keystrokes (e.g. "IIJJ;;LL") if they reach a program not in mouse mode.
-    // Forwarding is gated on sgrMouseRef, so we send only when the app negotiated SGR.
-    const wheelSeq = (dir: number, n: number, col: number, row: number) => {
-      const btn = dir < 0 ? 64 : 65;                  // 64 = wheel up, 65 = wheel down
-      let s = '';
-      for (let i = 0; i < n; i++) s += `\x1b[<${btn};${col};${row}M`;
-      return s;
-    };
-
     // The app wants SGR wheel reports if it has the mouse + SGR on now, OR had them on earlier
-    // in this alternate-screen session (sticky). Using the sticky flag means a reconnect/redraw
-    // desync (live flags momentarily false) doesn't drop us back to xterm's wheel→arrow-keys
-    // fallback while claude is still up. A program that only ever spoke X10 (no 1006) stays
-    // false here, so we never inject SGR bytes it can't parse.
+    // in this alternate-screen session (sticky). A program that only ever spoke X10 (no 1006)
+    // stays false, so the server never generates SGR bytes on its behalf.
     const wantSgrWheel = () =>
       (appMouseRef.current || appMouseSeenRef.current) && (sgrMouseRef.current || sgrSeenRef.current);
 
-    // The app gets its wheel forwarded ONLY when it's actually on the alternate screen AND we've
-    // seen it turn on mouse+SGR. Gating on the alt screen (not just the sticky flag) is what stops
-    // a stale "mouse seen" flag — left over when a prior claude was torn down without us seeing its
-    // alt-screen-exit reset — from hijacking the wheel of the plain shell that replaced it: a normal
-    // buffer's scrollback lives in tmux, so it must always route there regardless of the flag.
-    const forwardWheelToApp = () =>
+    // Alt-drag forwarding still needs the outer terminal to be in its interactive alternate
+    // screen. Wheel routing no longer uses this value; the server checks the real pane command.
+    const forwardMouseToApp = () =>
       wantSgrWheel() && termRef.current?.buffer.active.type === 'alternate';
 
-    // Scroll the pane `n` steps in `dir`. Three cases, by what owns the screen:
-    //  · plain shell (normal buffer) → its scrollback lives in tmux, not xterm, so ask the server
-    //    to scroll the viewer's copy-mode history (checked FIRST, so a stale flag can't divert it);
-    //  · alt-screen app that grabbed the mouse (claude) → forward a synthetic SGR wheel;
-    //  · alt-screen app without mouse (less/man) → scroll xterm's own buffer.
-    // Shared by the wheel handler and the on-screen scroll buttons.
+    // Browser xterm is displaying `tmux attach-session`, whose buffer type does NOT describe the
+    // program inside the pane. Send one server-routed scroll intent for every program. The server
+    // keeps Claude's SGR scrolling and sends every non-Claude program through tmux copy-mode.
+    // Shared by the physical wheel and the on-screen scroll buttons.
     const scrollBy = (dir: number, n: number) => {
       const t = termRef.current;
       if (!t) return;
       const sock = wsRef.current;
-      const ready = sock && sock.readyState === WebSocket.OPEN;
-      if (t.buffer.active.type === 'normal') {          // plain shell → tmux copy-mode history
-        if (ready) sock!.send(JSON.stringify({ type: 'scroll', dir, n }));
-        return;
-      }
-      if (!forwardWheelToApp()) {                        // alt-screen app w/o mouse → xterm's buffer
-        t.scrollLines(dir * n);
-        return;
-      }
-      if (!ready) return;
-      const col = Math.max(1, Math.floor(t.cols / 2)); // app only cares about wheel direction
+      if (!sock || sock.readyState !== WebSocket.OPEN) return;
+      const col = Math.max(1, Math.floor(t.cols / 2));
       const row = Math.max(1, Math.floor(t.rows / 2));
-      sock!.send(JSON.stringify({ type: 'input', data: wheelSeq(dir, n, col, row) }));
+      sock.send(JSON.stringify({ type: 'scroll', dir, n, col, row, mouseSgr: wantSgrWheel() }));
     };
     scrollByRef.current = scrollBy;
 
@@ -781,13 +746,7 @@ export default function TerminalView({
       const t = termRef.current;
       const sock = wsRef.current;
       const box = ref.current;
-      if (e.shiftKey || !e.deltaY || !t || !box || !sock || sock.readyState !== WebSocket.OPEN) return;
-      const shell = t.buffer.active.type === 'normal'; // plain shell → tmux copy-mode scroll
-      const appMouse = !shell && forwardWheelToApp();   // alt-screen app w/ mouse → SGR wheel
-      // A normal buffer always scrolls tmux (even if a stale mouse flag lingers — a plain shell
-      // never wants the wheel as mouse). Otherwise (alt-screen app without mouse, e.g. less/man)
-      // bail and let xterm's own alternate-scroll turn the wheel into arrow keys — which they expect.
-      if (!appMouse && !shell) return;
+      if (!e.deltaY || !t || !box || !sock || sock.readyState !== WebSocket.OPEN) return;
       const rect = box.getBoundingClientRect();
       const cellH = t.rows ? rect.height / t.rows : 0;
       const cellW = t.cols ? rect.width / t.cols : 0;
@@ -806,13 +765,13 @@ export default function TerminalView({
       wheelAccum -= dir * n * cellH;                  // drain only what we send; carry the rest
       const cap = 5 * cellH;                          // ...but keep the carry bounded
       wheelAccum = Math.max(-cap, Math.min(cap, wheelAccum));
-      if (appMouse) {
-        const col = Math.max(1, Math.min(t.cols, Math.floor((e.clientX - rect.left) / cellW) + 1));
-        const row = Math.max(1, Math.min(t.rows, Math.floor((e.clientY - rect.top) / cellH) + 1));
-        sock.send(JSON.stringify({ type: 'input', data: wheelSeq(dir, n, col, row) }));
-      } else {
-        sock.send(JSON.stringify({ type: 'scroll', dir, n }));
-      }
+      const col = Math.max(1, Math.min(t.cols, Math.floor((e.clientX - rect.left) / cellW) + 1));
+      const row = Math.max(1, Math.min(t.rows, Math.floor((e.clientY - rect.top) / cellH) + 1));
+      sock.send(JSON.stringify({
+        type: 'scroll', dir, n, col, row,
+        mouseSgr: wantSgrWheel(),
+        forceCopy: e.shiftKey,
+      }));
     };
     el?.addEventListener('wheel', onWheel, { capture: true, passive: false });
 
@@ -842,7 +801,7 @@ export default function TerminalView({
     };
     let lastCell = { col: 0, row: 0 };
     const onMouseDownFwd = (e: MouseEvent) => {
-      if (!e.altKey || e.button !== 0 || !forwardWheelToApp()) return;
+      if (!e.altKey || e.button !== 0 || !forwardMouseToApp()) return;
       const c = cellAt(e.clientX, e.clientY); if (!c) return;
       e.preventDefault(); e.stopPropagation();
       mouseFwdRef.current = true; lastCell = c;

@@ -22,7 +22,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', async (req, res) => {
+  const tmuxReady = !config.tmuxManagedExternally || await tmux.serverReady();
+  res.status(tmuxReady ? 200 : 503).json({ ok: tmuxReady, tmux: tmuxReady });
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes); // groups + nested windows
 app.use('/api/commands', commandRoutes);
