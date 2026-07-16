@@ -1,0 +1,23 @@
+[Unit]
+Description=Tmux Dashboard web console
+After=network.target tmux-dashboard-tmux.service
+Wants=tmux-dashboard-tmux.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@REPO_ROOT@/server
+ExecStart=@NODE_BIN@ src/server.js
+Restart=always
+RestartSec=2
+KillMode=control-group
+Environment=HOME=@HOME@
+Environment=NODE_ENV=production
+Environment=TMUX_SOCKET=tmuxdash
+Environment=TMUX_MANAGED_EXTERNALLY=1
+Environment=PATH=@PATH@
+# Application settings remain in server/.env and are loaded by dotenv from WorkingDirectory.
+
+[Install]
+WantedBy=multi-user.target

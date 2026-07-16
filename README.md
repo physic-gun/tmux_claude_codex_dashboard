@@ -23,7 +23,7 @@ Long-lived coding agents (Claude Code, Codex) still need a human in the loop —
 
 > **Runs natively on the host — not in Docker.** The terminals, tmux, and the `claude` / `codex` you launch all run as your system user, reusing your existing `~/.claude` login and full filesystem access — exactly what babysitting real agents needs. A container would wall the agent off from your projects and credentials.
 
-**Requires:** Node 20 · tmux · git
+**Requires:** Node 20 · tmux 3.2+ · git
 
 ```bash
 git clone https://github.com/physic-gun/tmux_claude_codex_dashboard.git
@@ -48,9 +48,21 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
 | 🖼️ | **Paste an image to the agent** | Paste (`Ctrl+V` / `Ctrl+Shift+V`) or drag an image into the terminal — it's uploaded to a server temp file and its path is injected into the prompt, so the agent auto-attaches it. Works on a headless host with no OS clipboard. |
 | ⌨️ | **Direct-send composer** | `Ctrl+G` opens a draggable, resizable multi-line editor; insert as one paste, or **send straight to the agent** with `Ctrl+Enter`. Drafts autosave per tab. |
 | 🌿 | **Git panel** | A side rail shows repo changes / "behind remote", with an inline diff viewer and commit · pull · push. |
-| 🕘 | **Resume & archive** | One-click resume of a previous Claude session; every window's scrollback is periodically snapshotted to disk so a tmux crash never loses a conversation. |
+| 🕘 | **Resume & archive** | One-click resume of a previous Claude session; periodic pane snapshots can help recover recent scrollback after a crash. |
 | 📱 | **Mobile** | On-screen keyboard, one-finger drag-select-to-copy, and tap-without-popping-the-OS-keyboard — babysit agents from your phone. |
 | 🔒 | **Auth & HTTPS** | JWT login with admin-managed users; optional self-signed HTTPS so the clipboard works across the LAN. |
+
+## Recent updates (2026-07)
+
+- **Agent-aware tab titles:** Claude keeps its OSC title; Codex CLI tabs resolve the exact root thread
+  title from the rollout file opened by the pane and Codex's read-only state database. Linux and
+  macOS are supported, and unavailable or duplicate titles fall back to the stable window name.
+- **Process-aware wheel routing:** the server verifies the real foreground command. Claude with SGR
+  mouse mode keeps native scrolling; Codex, shells, and other programs use viewer-local tmux
+  copy-mode. Scroll, copy-mode cancellation, and immediate keyboard input are serialized so the
+  first key after scrolling is not swallowed.
+- **Lifecycle-safe systemd deployment:** `TMUX_MANAGED_EXTERNALLY=1`, `tmux -N`, and sibling Node/tmux
+  units keep application reloads from owning or signaling the long-lived base panes.
 
 ## Screenshots
 
@@ -69,9 +81,9 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
 
 `React` · `xterm.js` · `Express` · `node-pty` · `tmux` · `SQLite`
 
-```
-Browser (React + xterm.js)  ──REST /api──▶  Express  ──▶  SQLite
-                            ──WS /ws/terminal──▶  node-pty  ──▶  tmux (grouped session per viewer)
+```text
+Browser ──REST/WS──▶ Node service cgroup ──Unix socket──▶ persistent tmux service cgroup
+                       Express + node-pty                  base panes + agents
 ```
 
 Each terminal connection spins up a tmux *grouped session* as its own viewer client, so disconnecting kills only that viewer — the real windows and other viewers are untouched.
@@ -87,6 +99,7 @@ All optional — sensible defaults, secrets auto-generated on first boot.
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / random | First-boot admin; empty password → random, printed to the log |
 | `DB_PATH` | `./data/dashboard.db` | SQLite path |
 | `TMUX_SOCKET` | `tmuxdash` | Dedicated tmux socket (isolated from your system tmux) |
+| `TMUX_MANAGED_EXTERNALLY` | `false` | Set `true` when another service supervises tmux; Node clients add `-N` and never recreate a missing server in their own cgroup |
 | `WORKSPACE_ROOT` | *(empty)* | New windows start in `<root>/<user>/<group>`; empty → tmux default dir |
 | `TLS_CERT` / `TLS_KEY` | *(empty)* | Point both at a cert/key to serve HTTPS (wss) |
 | `MAX_WINDOW_EXPANSION` | `50` | Upper bound for `name[[1-5]]` batch window creation |
@@ -96,30 +109,21 @@ All optional — sensible defaults, secrets auto-generated on first boot.
 <details>
 <summary><b>Linux (systemd, recommended)</b></summary>
 
-```ini
-# /etc/systemd/system/tmux-dashboard.service — replace <repo> / <user>
-[Unit]
-Description=tmux_claude_codex_dashboard
-After=network.target
+Use the two templates under [`deploy/systemd/`](deploy/systemd/README.md): one foreground
+`tmux -D` unit owns the base panes, while the Node unit only connects to its socket with `tmux -N`.
+The dashboard unit uses `Wants=` and `After=` only; do not add `PartOf=`, `BindsTo=`, or stop
+propagation to the tmux unit. The tmux template also uses `RefuseManualStop=yes` so an application
+deployment cannot accidentally end every session. In externally managed mode, `/api/health` returns
+503 when the tmux server is unavailable, so a live Node process is not mistaken for a healthy terminal service.
 
-[Service]
-Type=simple
-User=<user>
-WorkingDirectory=<repo>/server
-ExecStart=/usr/bin/env node src/server.js   # use an absolute node path if node isn't on PATH
-Restart=always
-RestartSec=2
-# EnvironmentFile=<repo>/server/.env
+For a fresh install, render and verify both templates, install them, run `systemctl daemon-reload`,
+then start the tmux unit before the dashboard unit. `daemon-reload` itself sends no process signal.
 
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now tmux-dashboard
-journalctl -u tmux-dashboard -f          # first-boot admin password shows here
-```
+For an existing combined service, **do not restart it to switch layouts**: its current panes may
+still share the Node cgroup and would be terminated. Use a maintenance window or a separately
+reviewed live-preservation migration; see the
+[lifecycle runbook](docs/tmux-lifecycle-separation.md). After the split is verified, application
+deployments restart only `tmux-dashboard.service`, never the tmux unit.
 </details>
 
 <details>
@@ -135,7 +139,36 @@ tmux -L dashsvc new-session -d -s server \
 ```
 
 - Logs: `tmux -L dashsvc attach` (`Ctrl-b d` detaches, doesn't stop it)
-- Stop: `tmux -L dashsvc kill-server`
+- Client-only builds need no signal. For server changes, reload only the unique positive Node PID
+  listening on the dashboard port; never stop either tmux server:
+
+```bash
+REPO=/absolute/path/to/tmux_dashboard
+PORT=${PORT:-6880}
+HEALTH_URL=${HEALTH_URL:-http://localhost:$PORT/api/health}
+set -- $(lsof -nP -tiTCP:$PORT -sTCP:LISTEN | sort -u)
+[ "$#" -eq 1 ] || { echo "expected one listener PID" >&2; exit 1; }
+pid=$1
+case "$pid" in ''|*[!0-9]*) exit 1 ;; esac
+[ "$pid" -gt 1 ] || exit 1
+cmd=$(ps -p "$pid" -o command=)
+case "$cmd" in *"node src/server.js"*) ;; *) echo "unexpected process: $cmd" >&2; exit 1 ;; esac
+cwd=$(lsof -a -p "$pid" -d cwd -Fn | sed -n 's/^n//p')
+[ "$cwd" = "$REPO/server" ] || { echo "unexpected cwd: $cwd" >&2; exit 1; }
+tmux_before=$(tmux -N -L tmuxdash list-sessions -F '#{pid}' | sort -u)
+case "$tmux_before" in ''|*[!0-9]*) echo "invalid tmux PID" >&2; exit 1 ;; esac
+/bin/kill -TERM "$pid"
+healthy=0
+for _ in $(seq 1 30); do
+  if curl -ksSf "$HEALTH_URL" >/dev/null; then healthy=1; break; fi
+  sleep 1
+done
+[ "$healthy" -eq 1 ] || { echo "dashboard did not recover" >&2; exit 1; }
+tmux_after=$(tmux -N -L tmuxdash list-sessions -F '#{pid}' | sort -u)
+[ "$tmux_before" = "$tmux_after" ] || { echo "tmux PID changed" >&2; exit 1; }
+```
+
+Never deploy with `tmux kill-server`, broad `pkill`, a negative PID, or a process-group signal.
 
 > Survives SSH logout but **not a reboot** (tmux is gone after restart). For true auto-start use launchd, and grant the node binary **Full Disk Access** if the project lives under `~/Documents` (macOS TCC) — otherwise launchd hangs at startup.
 </details>
@@ -159,7 +192,7 @@ basicConstraints=CA:FALSE
 [alt]
 DNS.1=localhost
 IP.1=127.0.0.1
-IP.2=192.168.1.100      # your LAN IP
+IP.2=YOUR_LAN_IP        # replace before running openssl
 CNF
 openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
   -keyout certs/key.pem -out certs/cert.pem -config certs/san.cnf

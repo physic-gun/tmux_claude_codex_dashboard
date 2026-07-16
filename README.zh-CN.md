@@ -25,7 +25,7 @@
 
 > **在宿主机上原生运行——不要用 Docker。** 网页终端、tmux、以及你启动的 `claude` / `codex` 都以你的系统用户身份运行，直接复用你现成的 `~/.claude` 登录与整机文件访问——盯真实代理正需要这点。放进容器则会把代理与你的项目、凭证隔开。
 
-**环境要求：** Node 20 · tmux · git
+**环境要求：** Node 20 · tmux 3.2+ · git
 
 ```bash
 git clone https://github.com/physic-gun/tmux_claude_codex_dashboard.git
@@ -50,9 +50,19 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 | 🖼️ | **粘贴图片给代理** | 在终端里粘贴（`Ctrl+V` / `Ctrl+Shift+V`）或拖入图片——自动上传到服务器临时文件并把路径注入到输入框，代理据此识别为图片读取；无头服务器没有系统剪贴板也能用。 |
 | ⌨️ | **直发编辑器** | `Ctrl+G` 打开可拖动、可缩放的多行编辑器；作为一次粘贴插入，或 `Ctrl+Enter` **直发**给代理。草稿按选项卡自动保存。 |
 | 🌿 | **Git 面板** | 右侧源码栏显示仓库改动 /「落后远程」，内置 diff 查看与 commit · pull · push。 |
-| 🕘 | **恢复与存档** | 一键 resume 此前的 claude 会话；定期把每个窗口的滚动内容快照落盘，tmux 崩溃也不丢对话。 |
+| 🕘 | **恢复与存档** | 一键 resume 此前的 claude 会话；定期 pane 快照可辅助恢复崩溃前最近的滚动内容。 |
 | 📱 | **移动端** | 屏幕键盘、单指拖选复制、点按不弹系统键盘——在手机上也能盯着代理。 |
 | 🔒 | **鉴权与 HTTPS** | JWT 登录、管理员增删用户；可选自签名 HTTPS，让局域网也能用剪贴板。 |
+
+## 近期更新（2026-07）
+
+- **识别代理会话标题：** Claude 继续使用 OSC 标题；Codex CLI 根据 pane 正在打开的 rollout 文件和
+  Codex 只读状态库精确解析 root thread 标题，支持 Linux/macOS。标题不可用或重复时回退到稳定窗口名。
+- **按前台进程路由滚轮：** 服务端核验真实前台命令。Claude 启用 SGR 鼠标时保持应用原生滚动；
+  Codex、shell 和其它程序进入观察者独立的 tmux copy-mode。滚动、退出 copy-mode 与紧随其后的输入
+  串行执行，避免滚动后的第一个按键被吞。
+- **systemd 生命周期解耦：** `TMUX_MANAGED_EXTERNALLY=1`、`tmux -N` 和并列的 Node/tmux unit
+  让应用重载不再拥有或向长期业务 pane 发送信号。
 
 ## 截图
 
@@ -71,9 +81,9 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 
 `React` · `xterm.js` · `Express` · `node-pty` · `tmux` · `SQLite`
 
-```
-浏览器 (React + xterm.js)  ──REST /api──▶  Express  ──▶  SQLite
-                          ──WS /ws/terminal──▶  node-pty  ──▶  tmux（每个观察者一个 grouped session）
+```text
+浏览器 ──REST/WS──▶ Node service cgroup ──Unix socket──▶ 持久 tmux service cgroup
+                      Express + node-pty                   业务 pane + 代理
 ```
 
 每个终端连接都会创建一个 tmux *grouped session* 作为独立观察客户端：断开只杀这个观察者，业务窗口与其它观察者互不影响。
@@ -89,6 +99,7 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 随机 | 首次启动创建的管理员；密码留空则随机生成并打印到日志 |
 | `DB_PATH` | `./data/dashboard.db` | SQLite 路径 |
 | `TMUX_SOCKET` | `tmuxdash` | 专用 tmux socket（与系统 tmux 隔离） |
+| `TMUX_MANAGED_EXTERNALLY` | `false` | tmux 由独立服务监管时设为 `true`；Node 客户端加 `-N`，socket 缺失时失败而不在自身 cgroup 重建 |
 | `WORKSPACE_ROOT` | *（空）* | 新窗口起始目录 `<root>/<用户名>/<分组名>`；空则用 tmux 默认目录 |
 | `TLS_CERT` / `TLS_KEY` | *（空）* | 两者都指向证书/私钥时以 HTTPS(wss) 运行 |
 | `MAX_WINDOW_EXPANSION` | `50` | `name[[1-5]]` 批量建窗上限 |
@@ -98,30 +109,19 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 <details>
 <summary><b>Linux（systemd，推荐）</b></summary>
 
-```ini
-# /etc/systemd/system/tmux-dashboard.service —— <repo> / <你的用户名> 按实际替换
-[Unit]
-Description=tmux_claude_codex_dashboard
-After=network.target
+使用 [`deploy/systemd/`](deploy/systemd/README.md) 下的两份模板：一个前台 `tmux -D` unit
+拥有业务 pane，Node unit 只通过 `tmux -N` 连接 socket。Dashboard unit 只使用 `Wants=` 与
+`After=`，不要添加 `PartOf=`、`BindsTo=` 或向 tmux unit 传播 stop。tmux 模板还设置了
+`RefuseManualStop=yes`，避免普通应用部署意外结束所有会话。外管模式下 tmux 不可用时
+`/api/health` 返回 503，避免把“Node 仍存活”误判为终端服务健康。
 
-[Service]
-Type=simple
-User=<你的用户名>
-WorkingDirectory=<repo>/server
-ExecStart=/usr/bin/env node src/server.js   # node 不在 PATH 时用绝对路径
-Restart=always
-RestartSec=2
-# EnvironmentFile=<repo>/server/.env
+全新安装时，先渲染并验证两份模板，再安装、执行 `systemctl daemon-reload`，随后先启动 tmux unit，
+再启动 Dashboard unit。`daemon-reload` 本身不会向进程发送信号。
 
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now tmux-dashboard
-journalctl -u tmux-dashboard -f          # 首次生成的 admin 密码在这里
-```
+已有单 unit 部署**不能靠 restart 直接切换**：现有 pane 可能仍与 Node 共享 cgroup，会被一起终止。
+应安排维护窗口，或单独审核 live-preservation 迁移；见
+[生命周期迁移说明](docs/tmux-lifecycle-separation.md)。拆分核验完成后，应用部署只重启
+`tmux-dashboard.service`，绝不重启 tmux unit。
 </details>
 
 <details>
@@ -137,7 +137,36 @@ tmux -L dashsvc new-session -d -s server \
 ```
 
 - 看日志：`tmux -L dashsvc attach`（`Ctrl-b d` 退出查看，不停服务）
-- 停服务：`tmux -L dashsvc kill-server`
+- 仅前端构建无需发送任何信号。后端更新只重载唯一、正数、监听 Dashboard 端口的 Node PID；
+  不停止任何 tmux server：
+
+```bash
+REPO=/absolute/path/to/tmux_dashboard
+PORT=${PORT:-6880}
+HEALTH_URL=${HEALTH_URL:-http://localhost:$PORT/api/health}
+set -- $(lsof -nP -tiTCP:$PORT -sTCP:LISTEN | sort -u)
+[ "$#" -eq 1 ] || { echo "监听 PID 不是唯一值" >&2; exit 1; }
+pid=$1
+case "$pid" in ''|*[!0-9]*) exit 1 ;; esac
+[ "$pid" -gt 1 ] || exit 1
+cmd=$(ps -p "$pid" -o command=)
+case "$cmd" in *"node src/server.js"*) ;; *) echo "进程不匹配: $cmd" >&2; exit 1 ;; esac
+cwd=$(lsof -a -p "$pid" -d cwd -Fn | sed -n 's/^n//p')
+[ "$cwd" = "$REPO/server" ] || { echo "cwd 不匹配: $cwd" >&2; exit 1; }
+tmux_before=$(tmux -N -L tmuxdash list-sessions -F '#{pid}' | sort -u)
+case "$tmux_before" in ''|*[!0-9]*) echo "tmux PID 无效" >&2; exit 1 ;; esac
+/bin/kill -TERM "$pid"
+healthy=0
+for _ in $(seq 1 30); do
+  if curl -ksSf "$HEALTH_URL" >/dev/null; then healthy=1; break; fi
+  sleep 1
+done
+[ "$healthy" -eq 1 ] || { echo "Dashboard 未恢复" >&2; exit 1; }
+tmux_after=$(tmux -N -L tmuxdash list-sessions -F '#{pid}' | sort -u)
+[ "$tmux_before" = "$tmux_after" ] || { echo "tmux PID 发生变化" >&2; exit 1; }
+```
+
+禁止使用 `tmux kill-server`、宽泛 `pkill`、负 PID 或进程组信号部署。
 
 > 能扛住「关闭 SSH 会话」，但**扛不住重启**（tmux 重启即消失）。若要真正开机自启需用 launchd；项目若位于 `~/Documents`（受 macOS TCC 保护）还需给 node 授予**完全磁盘访问**，否则 launchd 启动时会卡死。
 </details>
@@ -161,7 +190,7 @@ basicConstraints=CA:FALSE
 [alt]
 DNS.1=localhost
 IP.1=127.0.0.1
-IP.2=192.168.1.100      # 换成你的局域网 IP
+IP.2=YOUR_LAN_IP        # 运行 openssl 前替换
 CNF
 openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
   -keyout certs/key.pem -out certs/cert.pem -config certs/san.cnf

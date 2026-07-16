@@ -1,0 +1,27 @@
+[Unit]
+Description=Tmux Dashboard persistent tmux server
+After=local-fs.target
+Before=tmux-dashboard.service
+# Stopping this unit ends every dashboard shell and agent. Remove this guard only during an
+# explicitly approved maintenance window.
+RefuseManualStop=yes
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@REPO_ROOT@/server
+Environment=HOME=@HOME@
+Environment=LANG=C.UTF-8
+Environment=PATH=@PATH@
+# If a live-preservation migration already owns the socket, skip a conflicting second server.
+ExecCondition=/bin/sh -c '! @TMUX_BIN@ -N -L tmuxdash show-options -gqv exit-empty >/dev/null 2>&1'
+ExecStart=@TMUX_BIN@ -D -L tmuxdash -f @REPO_ROOT@/server/tmux.conf
+ExecStartPost=@REPO_ROOT@/deploy/systemd/wait-for-tmux.sh tmuxdash 50 @TMUX_BIN@
+Restart=on-failure
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
