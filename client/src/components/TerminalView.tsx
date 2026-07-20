@@ -8,6 +8,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { getToken, api, postRaw } from '../api';
 import { copyText } from '../lib/clipboard';
 import { filePathCandidate, isMarkdownPath, fmtSize, renderMarkdown, type FileView } from '../lib/fileview';
+import { normalizeTerminalSelection } from '../lib/terminalSelection.js';
 import FloatingPanel from './FloatingPanel';
 import FileExplorer from './FileExplorer';
 
@@ -631,6 +632,18 @@ export default function TerminalView({
         .catch(() => showHintRef.current('无法读取剪贴板（需 https/已授权）'));
     };
 
+    // Keep every local-selection copy path on the same cleanup behavior. xterm preserves
+    // explicitly painted padding cells, so normalize those before they reach the OS clipboard.
+    const copySelection = () => {
+      const raw = term.getSelection();
+      if (!raw) return false;
+      const text = normalizeTerminalSelection(raw);
+      if (!text) return false;
+      void copyText(text);
+      pendingClipRef.current = ''; // a manual copy supersedes a pending claude one
+      return true;
+    };
+
     // Intercept Ctrl+G (multi-line editor), Cmd/Ctrl+Shift+C (copy), and paste shortcuts.
     term.attachCustomKeyEventHandler((e) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'g' || e.key === 'G')) {
@@ -641,7 +654,7 @@ export default function TerminalView({
       // DevTools). Claude's own select-to-copy arrives via OSC 52 (handled separately).
       const isCopy = e.metaKey && (e.key === 'c' || e.key === 'C');
       if (isCopy && term.hasSelection()) {
-        if (e.type === 'keydown') { e.preventDefault(); copyText(term.getSelection()); pendingClipRef.current = ''; }
+        if (e.type === 'keydown') { e.preventDefault(); copySelection(); }
         return false;
       }
       // Paste: Ctrl/Cmd+Shift+V reads the clipboard and pastes (bracketed) into the app.
@@ -670,10 +683,7 @@ export default function TerminalView({
     // gesture, so it succeeds even on a plain http LAN origin (unlike OSC52 copies, which
     // arrive in a WebSocket event with no user activation and get blocked by the browser).
     const el = ref.current;
-    const onMouseUp = () => {
-      const sel = term.getSelection();
-      if (sel) { copyText(sel); pendingClipRef.current = ''; } // a manual copy supersedes a pending claude one
-    };
+    const onMouseUp = () => { copySelection(); };
     el?.addEventListener('mouseup', onMouseUp);
 
     // Flush a claude copy that the browser blocked from the system clipboard: the next user gesture
@@ -853,11 +863,8 @@ export default function TerminalView({
     const onTouchEndSel = (e: TouchEvent) => {
       if (!selectModeRef.current || !selAnchor) return;
       selAnchor = null;
-      const sel = term.getSelection();
-      if (sel) {
+      if (copySelection()) {
         e.preventDefault(); // swallow the synthesized click so it doesn't clear the selection / pop the keyboard
-        copyText(sel);
-        pendingClipRef.current = '';
         showHintRef.current('已复制所选文字');
       }
     };
