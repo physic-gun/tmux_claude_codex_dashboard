@@ -3,6 +3,7 @@ import 'dotenv/config';
 const envFlag = (value) => /^(1|true|yes|on)$/i.test(String(value || ''));
 
 export const config = {
+  host: process.env.HOST || '0.0.0.0',
   port: Number(process.env.PORT || 6880),
   // No insecure literal default: an unset/short secret triggers an auto-generated,
   // persisted random secret (see secret.js).

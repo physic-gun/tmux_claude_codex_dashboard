@@ -95,6 +95,7 @@ All optional — sensible defaults, secrets auto-generated on first boot.
 | Var | Default | Notes |
 |---|---|---|
 | `PORT` | `6880` | Listen port |
+| `HOST` | `0.0.0.0` | Listen address; set a specific LAN IPv4 to restrict exposure |
 | `JWT_SECRET` | auto-generated & persisted | Empty → auto-generate a random key; set a fixed value (≥16 chars) to pin it |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / random | First-boot admin; empty password → random, printed to the log |
 | `DB_PATH` | `./data/dashboard.db` | SQLite path |

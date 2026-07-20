@@ -8,6 +8,7 @@ Replace every token before installing:
 
 - `@USER@` / `@GROUP@`: the unprivileged account that owns the projects and agent credentials.
 - `@HOME@`: that account's home directory.
+- `@HOST@`: the exact listen address for the dashboard web service.
 - `@REPO_ROOT@`: absolute checkout path, without a trailing slash.
 - `@NODE_BIN@` / `@TMUX_BIN@`: absolute executable paths from `command -v node` and
   `command -v tmux`.

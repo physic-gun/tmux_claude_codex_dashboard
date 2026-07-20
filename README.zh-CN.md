@@ -95,6 +95,7 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PORT` | `6880` | 监听端口 |
+| `HOST` | `0.0.0.0` | 监听地址；可设为指定局域网 IPv4 以限制暴露范围 |
 | `JWT_SECRET` | 自动生成并持久化 | 留空即自动生成随机密钥；设固定值（需 ≥16 位）则固定 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 随机 | 首次启动创建的管理员；密码留空则随机生成并打印到日志 |
 | `DB_PATH` | `./data/dashboard.db` | SQLite 路径 |

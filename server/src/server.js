@@ -98,14 +98,14 @@ if (useTls) {
       process.nextTick(() => socket.resume());
     });
   });
-  front.listen(config.port, '0.0.0.0', () => {
-    console.log(`tmux-dashboard listening on https://0.0.0.0:${config.port} (plain http on this port redirects to https)`);
+  front.listen(config.port, config.host, () => {
+    console.log(`tmux-dashboard listening on https://${config.host}:${config.port} (plain http on this port redirects to https)`);
     console.log('[tls] self-signed cert in use — accept the browser warning once per device');
   });
 } else {
   const server = http.createServer(app);
   setupWebSocket(server);
-  server.listen(config.port, '0.0.0.0', () => {
-    console.log(`tmux-dashboard listening on http://0.0.0.0:${config.port}`);
+  server.listen(config.port, config.host, () => {
+    console.log(`tmux-dashboard listening on http://${config.host}:${config.port}`);
   });
 }
