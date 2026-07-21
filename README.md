@@ -42,6 +42,7 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
 |  | Feature | What it does |
 |---|---|---|
 | 🗂️ | **Groups → tabs** | Each user gets named groups (one long-lived tmux session each); tabs are tmux windows. Close a tab and it just backgrounds — the process keeps running — reopen or kill it later. |
+| 🚦 | **Agent activity indicators** | Claude Code / Codex CLI turns are yellow while working and green when completed, waiting, failed, or interrupted. Idle agents are gray; right-click a tab for a persistent red todo marker. |
 | 📋 | **Clipboard relay** | Captures every terminal **OSC 52** copy (Claude's `/copy`, select-to-copy) straight from the stream, so nothing is lost even when the browser blocks the system clipboard. One tap to refill or send it back. |
 | 📄 | **File preview** | Copy a file path (absolute, or relative to the agent's working dir) and its contents open in a read-only split — with Markdown rendering and a pop-out reader. |
 | 📁 | **File explorer** | A draggable file manager (📁 button) anchored to the pane's working dir: browse folders, one-click **copy path** or **send it to the agent**, preview text/Markdown, `cd`, and create / rename / delete / **upload (drag-drop)** / download. An address bar jumps to any path. |
@@ -54,6 +55,9 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
 
 ## Recent updates (2026-07)
 
+- **Lifecycle-based agent activity:** official Claude/Codex hooks drive yellow working, green
+  attention, and gray idle indicators without parsing terminal text. Manual red todos persist in
+  SQLite, including for background windows and across devices.
 - **Agent-aware tab titles:** Claude keeps its OSC title; Codex CLI tabs resolve the exact root thread
   title from the rollout file opened by the pane and Codex's read-only state database. Linux and
   macOS are supported, and unavailable or duplicate titles fall back to the stable window name.
@@ -63,6 +67,21 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
   first key after scrolling is not swallowed.
 - **Lifecycle-safe systemd deployment:** `TMUX_MANAGED_EXTERNALLY=1`, `tmux -N`, and sibling Node/tmux
   units keep application reloads from owning or signaling the long-lived base panes.
+
+## Agent activity hooks
+
+Activity indicators require user-level lifecycle hooks. The installer is read-only by default;
+review its plan before applying it:
+
+```bash
+node server/scripts/install-runtime-activity-hooks.js --check
+node server/scripts/install-runtime-activity-hooks.js --apply --claude --codex
+```
+
+After installing Codex hooks, start a new Codex session and use `/hooks` to review and trust the
+exact command definition. See the [activity hook guide](docs/agent-activity-hooks.md) for minimum
+versions, installing only one CLI, acknowledgement behavior, and known limitations. A
+[Simplified Chinese guide](docs/agent-activity-hooks.zh-CN.md) is also available.
 
 ## Screenshots
 

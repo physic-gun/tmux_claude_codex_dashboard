@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
+import type { WindowActivity } from '../types';
+import { getTabClickAck } from '../lib/activity.js';
+import { WindowActivityDots } from './ActivityDots';
 
 interface Props {
   gid: number;
   windows: string[];
   titles?: Record<string, string>;
   branches?: Record<string, string>;
+  activities?: Record<string, WindowActivity>;
   active: string | null;
   onSelect: (n: string) => void;
   onClose: (n: string) => void;
@@ -13,12 +17,15 @@ interface Props {
   onAddWindow: (name: string) => Promise<void> | void;
   // Persist a new tab order (array of the open window names). Server reindexes windows.sort_order.
   onReorder: (order: string[]) => Promise<void> | void;
+  onSetTodo: (name: string, todo: boolean) => Promise<void> | void;
+  onAcknowledge: (name: string, clearTodo: boolean, clearAttention: boolean) => Promise<void> | void;
 }
 
 const STAR_KEY = 'tmuxdash:starredTabs';
 
 export default function TabBar({
-  gid, windows, titles, branches, active, onSelect, onClose, onAddWindow, onReorder,
+  gid, windows, titles, branches, activities, active, onSelect, onClose, onAddWindow, onReorder,
+  onSetTodo, onAcknowledge,
 }: Props) {
   const [wtAdding, setWtAdding] = useState(false);
   const [wtName, setWtName] = useState('');
@@ -66,6 +73,22 @@ export default function TabBar({
     const rest = windows.filter((x) => x !== w);
     const next = toFront ? [w, ...rest] : [...rest, w];
     onReorder(next);
+  }
+
+  function selectTab(w: string) {
+    onSelect(w);
+    const ack = getTabClickAck(activities?.[w]);
+    if (!ack) return;
+    Promise.resolve(onAcknowledge(w, ack.clearTodo, ack.clearAttention)).catch((e) => {
+      setErr((e as Error).message);
+    });
+  }
+
+  function setTodo(w: string, todo: boolean) {
+    setMenu(null);
+    Promise.resolve(onSetTodo(w, todo)).catch((e) => {
+      setErr((e as Error).message);
+    });
   }
 
   // Vertical wheel over the (single-row) tab strip scrolls it horizontally. Native non-passive
@@ -145,6 +168,7 @@ export default function TabBar({
           const base = baseLabel(w);
           const label = labelCounts[base] > 1 ? w : base;
           const branch = branches?.[w];
+          const activity = activities?.[w];
           const kind = branch
             ? `隔离 worktree · 分支: ${branch}`
             : '普通窗口（共享分组目录，非 worktree）';
@@ -153,13 +177,14 @@ export default function TabBar({
               key={w}
               ref={w === active ? activeRef : undefined}
               className={`tab ${w === active ? 'active' : ''}`}
-              onClick={() => onSelect(w)}
+              onClick={() => selectTab(w)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setMenu({ x: e.clientX, y: e.clientY, w });
               }}
-              title={`${label === w ? w : `${label}  ·  窗口: ${w}`}\n${kind}\n（右键：前移/后移/置顶/置底、收藏）`}
+              title={`${label === w ? w : `${label}  ·  窗口: ${w}`}\n${kind}\n（右键：排序、收藏、待办）`}
             >
+              <WindowActivityDots activity={activity} />
               {isStar(w) && <span className="tab-star" title="已收藏">★</span>}
               {branch && <span className="tab-branch" title={`隔离 worktree · 分支 ${branch}`}>⎇</span>}
               <span className="tab-label">{label}</span>
@@ -204,8 +229,8 @@ export default function TabBar({
           <div
             className="tab-menu"
             style={{
-              left: Math.min(menu.x, window.innerWidth - 170),
-              top: Math.min(menu.y, window.innerHeight - 140),
+              left: Math.max(4, Math.min(menu.x, window.innerWidth - 170)),
+              top: Math.max(4, Math.min(menu.y, window.innerHeight - 210)),
             }}
           >
             <button disabled={menuIdx <= 0} onClick={() => { move(menu.w, -1); setMenu(null); }}>
@@ -223,6 +248,9 @@ export default function TabBar({
             <div className="tab-menu-sep" />
             <button onClick={() => { toggleStar(menu.w); setMenu(null); }}>
               {isStar(menu.w) ? '☆ 取消收藏' : '★ 收藏'}
+            </button>
+            <button onClick={() => setTodo(menu.w, !activities?.[menu.w]?.todo)}>
+              {activities?.[menu.w]?.todo ? '○ 取消待办' : '● 标记待办'}
             </button>
           </div>
         </>

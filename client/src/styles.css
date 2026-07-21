@@ -191,7 +191,10 @@ input { font-family: inherit; }
 }
 .group-list li.active { background: var(--panel-2); }
 .group-list li:hover { background: var(--panel-2); }
-.group-name { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-name {
+  flex: 1; min-width: 0; cursor: pointer; display: flex; align-items: center; gap: 7px;
+}
+.group-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .add-group { display: flex; gap: 6px; margin-top: 8px; }
 .add-group input { flex: 1; min-width: 0; }
@@ -305,6 +308,35 @@ input { font-family: inherit; }
 .tab .tab-branch { color: var(--accent); font-size: 12px; line-height: 1; }
 /* favorite marker (right-click → 收藏) */
 .tab .tab-star { color: #f5c542; font-size: 12px; line-height: 1; }
+.activity-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.activity-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.activity-dot.todo { background: var(--danger); }
+.activity-dot.working {
+  background: var(--warn);
+  animation: activity-working-pulse 1.45s ease-in-out infinite;
+}
+.activity-dot.attention { background: var(--ok); box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 72%, transparent); }
+.activity-dot.idle { background: var(--muted); }
+.group-activity-dots { margin-left: auto; }
+@keyframes activity-working-pulse {
+  0%, 100% { opacity: 0.65; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+  50% { opacity: 1; box-shadow: 0 0 7px color-mix(in srgb, var(--warn) 72%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-dot.working { animation: none; }
+}
 .tab .x, .group-list .x, .chip .x {
   background: none;
   border: none;
@@ -654,7 +686,10 @@ input { font-family: inherit; }
 .qc-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
 .qc-list, .bg-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .chip { display: inline-flex; align-items: center; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
-.chip > button:first-child { background: none; border: none; color: var(--text); padding: 5px 10px; }
+.chip > button:first-child {
+  background: none; border: none; color: var(--text); padding: 5px 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
 .chip > button:first-child:disabled { color: var(--muted); cursor: not-allowed; }
 .chip.bg > button:first-child { color: var(--accent); }
 .chip .x { padding-right: 8px; }

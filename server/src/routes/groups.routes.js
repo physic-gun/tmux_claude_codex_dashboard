@@ -12,6 +12,8 @@ import { ensureGroupDirFor, groupDirFilesFor, prepareCustomDir, worktreesRootFor
 import { latestSessionId } from '../sessions.js';
 import { codexSessionsForWindows } from '../codexSessions.js';
 import { isClaudePane } from '../scrollRouting.js';
+import { acknowledgeWindowActivity } from '../activity.js';
+import { findOwnedActivityWindow, setOwnedWindowTodo } from '../activityStore.js';
 import {
   findGitRepos, isGitRepo, repoStatus, repoFiles, fileDiff, gitCommit, gitPull, gitPush, gitFetch,
   ensureRepoInited, addWorktree, removeWorktree, refreshNestedRepoIgnore, branchExists,
@@ -536,6 +538,39 @@ router.post('/:gid/windows/:name/reopen', loadGroup, (req, res) => {
   );
   res.json({ ok: true });
 });
+
+router.post('/:gid/windows/:name/todo', loadGroup, (req, res) => {
+  if (typeof req.body?.todo !== 'boolean') {
+    return res.status(400).json({ error: 'todo 必须是布尔值' });
+  }
+  const row = setOwnedWindowTodo(
+    db,
+    req.user.id,
+    req.group.id,
+    req.params.name,
+    req.body.todo
+  );
+  if (!row) return res.status(404).json({ error: '窗口不存在' });
+  res.json({ ok: true, todo: Boolean(row.todo) });
+});
+
+router.post('/:gid/windows/:name/ack', loadGroup, ah(async (req, res) => {
+  const { clearTodo, clearAttention } = req.body || {};
+  if ((clearTodo !== undefined && typeof clearTodo !== 'boolean') ||
+      (clearAttention !== undefined && typeof clearAttention !== 'boolean')) {
+    return res.status(400).json({ error: 'clearTodo 和 clearAttention 必须是布尔值' });
+  }
+  if (!clearTodo && !clearAttention) {
+    return res.status(400).json({ error: '至少指定一个要清除的状态' });
+  }
+  const row = findOwnedActivityWindow(db, req.user.id, req.group.id, req.params.name);
+  if (!row) return res.status(404).json({ error: '窗口不存在' });
+  if (clearTodo) setOwnedWindowTodo(db, req.user.id, req.group.id, req.params.name, false);
+  const attentionCleared = clearAttention
+    ? await acknowledgeWindowActivity(req.group.id, req.params.name)
+    : false;
+  res.json({ ok: true, todo: clearTodo ? false : Boolean(row.todo), attentionCleared });
+}));
 
 router.delete('/:gid/windows/:name', loadGroup, ah(async (req, res) => {
   const session = sessionNameForGroup(req.group.id);

@@ -82,6 +82,9 @@ ensureColumn('windows', 'session_id', 'session_id TEXT');
 // /windows/worktree route — purely additive, existing rows stay NULL.
 ensureColumn('windows', 'worktree_path', 'worktree_path TEXT');
 ensureColumn('windows', 'branch', 'branch TEXT');
+// Manual attention marker. Unlike transient agent activity (kept on the tmux pane), todo follows
+// the persisted window across browser/device reconnects and while the tab is in the background.
+ensureColumn('windows', 'todo', 'todo INTEGER NOT NULL DEFAULT 0');
 // Per-user scroll-button step sizes (lines per click of the small / big scroll buttons).
 ensureColumn('users', 'scroll_step_small', 'scroll_step_small INTEGER NOT NULL DEFAULT 20');
 ensureColumn('users', 'scroll_step_big', 'scroll_step_big INTEGER NOT NULL DEFAULT 60');

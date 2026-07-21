@@ -1,9 +1,11 @@
 import { useState, FormEvent } from 'react';
-import { Group } from '../types';
+import { Group, WindowActivity } from '../types';
 import ManualPathModal from './ManualPathModal';
+import { GroupActivityDots } from './ActivityDots';
 
 interface Props {
   groups: Group[];
+  activities: WindowActivity[];
   activeGid: number | null;
   onSelect: (id: number) => void;
   onCreate: (name: string) => Promise<void> | void;
@@ -14,7 +16,7 @@ interface Props {
   onUpdateIgnore: (id: number) => void;
 }
 
-export default function GroupSidebar({ groups, activeGid, onSelect, onCreate, onCreatePath, onDelete, onReorder, onUpdateIgnore }: Props) {
+export default function GroupSidebar({ groups, activities, activeGid, onSelect, onCreate, onCreatePath, onDelete, onReorder, onUpdateIgnore }: Props) {
   const [name, setName] = useState('');
   const [err, setErr] = useState('');
   const [pathModalOpen, setPathModalOpen] = useState(false);
@@ -61,7 +63,8 @@ export default function GroupSidebar({ groups, activeGid, onSelect, onCreate, on
         {groups.map((g, idx) => (
           <li key={g.id} className={`${g.id === activeGid ? 'active' : ''}${manage ? ' managing' : ''}`}>
             <span className="group-name" onClick={() => onSelect(g.id)}>
-              {g.name}
+              <span className="group-label">{g.name}</span>
+              <GroupActivityDots activities={activities.filter((activity) => activity.groupId === g.id)} />
             </span>
             {manage && (
               <span className="group-actions">

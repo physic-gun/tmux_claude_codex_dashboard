@@ -13,6 +13,7 @@ import commandRoutes from './routes/commands.routes.js';
 import userRoutes from './routes/users.routes.js';
 import fsRoutes from './routes/fs.routes.js';
 import sessionRoutes from './routes/sessions.routes.js';
+import activityRoutes from './routes/activity.routes.js';
 import { setupWebSocket, restoreOpenWindows } from './ws.js';
 import * as tmux from './tmux.js';
 import { startPeriodicArchiver } from './sessionArchive.js';
@@ -32,6 +33,7 @@ app.use('/api/commands', commandRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/fs', fsRoutes);
 app.use('/api/sessions', sessionRoutes);
+app.use('/api/activity', activityRoutes);
 
 // API JSON 404 (so the SPA fallback below never swallows unknown API routes).
 app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' }));

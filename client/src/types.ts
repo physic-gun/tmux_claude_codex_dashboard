@@ -30,6 +30,25 @@ export interface WindowsResp {
   branches?: Record<string, string>;
 }
 
+export type AgentKind = 'claude' | 'codex';
+export type ActivityPhase = 'idle' | 'working' | 'attention';
+
+export interface WindowActivity {
+  groupId: number;
+  window: string;
+  todo: boolean;
+  agent: AgentKind | null;
+  phase: ActivityPhase | null;
+  reason: string | null;
+  detail: string | null;
+  updatedAt: string | null;
+}
+
+export interface ActivityResp {
+  observedAt: string;
+  windows: WindowActivity[];
+}
+
 export interface ClaudeSession {
   id: string;
   shortId: string;

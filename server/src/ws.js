@@ -7,6 +7,7 @@ import { db } from './db.js';
 import * as tmux from './tmux.js';
 import { ensureGroupDirFor } from './workspace.js';
 import { sgrWheel, shouldUseNativeWheel } from './scrollRouting.js';
+import { forwardInputAfterActivity } from './activity.js';
 
 const { spawn } = nodePty;
 
@@ -244,7 +245,13 @@ export function setupWebSocket(server) {
           let msg;
           try { msg = JSON.parse(raw.toString()); } catch { return; }
           if (msg.type === 'input') {
-            enqueueIo(() => writeInput(typeof msg.data === 'string' ? msg.data : ''));
+            const input = typeof msg.data === 'string' ? msg.data : '';
+            enqueueIo(() => forwardInputAfterActivity({
+              groupId: gid,
+              window: windowName,
+              data: input,
+              write: writeInput,
+            }));
           } else if (msg.type === 'resize') {
             try { ptyProc.resize(Math.max(1, msg.cols | 0), Math.max(1, msg.rows | 0)); } catch {}
           } else if (msg.type === 'scroll') {

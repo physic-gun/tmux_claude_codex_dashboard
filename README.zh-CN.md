@@ -44,6 +44,7 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 |  | 功能 | 说明 |
 |---|---|---|
 | 🗂️ | **分组 → 选项卡** | 每个用户可建多个命名分组（每组 = 一个常驻 tmux session）；选项卡就是 tmux 窗口。关闭选项卡只转后台——进程仍在跑——可随时恢复或彻底结束。 |
+| 🚦 | **代理活动灯** | Claude Code / Codex CLI 工作时亮黄灯；完成、等待、失败或中断时亮绿灯；空闲显示灰灯。右键选项卡可添加跨设备持久化的红色待办。 |
 | 📋 | **剪贴板中转** | 从原始输出流捕获终端 **OSC 52** 复制（claude 的 `/copy`、选中即复制），即使浏览器拦截系统剪贴板也不丢；一键回填或发送回去。 |
 | 📄 | **文件预览** | 复制一段文件路径（绝对路径，或相对代理运行目录），内容在下方分栏只读预览——支持 Markdown 渲染与放大悬浮窗。 |
 | 📁 | **文件浏览器** | 悬浮可拖拽的文件管理器（右下角 📁），默认定位到窗口工作目录：浏览目录、一键**复制路径**或**发送给代理**、预览文本/Markdown、`cd`，并可新建 / 重命名 / 删除 / **上传（拖拽）** / 下载；地址栏可直接跳转到任意路径。 |
@@ -56,6 +57,8 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 
 ## 近期更新（2026-07）
 
+- **基于 lifecycle hook 的代理活动灯：** 使用 Claude/Codex 官方 hooks 显示黄色工作、绿色关注、
+  灰色空闲状态，不解析终端文本；手工红色待办保存在 SQLite，后台窗口和跨设备访问也会保留。
 - **识别代理会话标题：** Claude 继续使用 OSC 标题；Codex CLI 根据 pane 正在打开的 rollout 文件和
   Codex 只读状态库精确解析 root thread 标题，支持 Linux/macOS。标题不可用或重复时回退到稳定窗口名。
 - **按前台进程路由滚轮：** 服务端核验真实前台命令。Claude 启用 SGR 鼠标时保持应用原生滚动；
@@ -63,6 +66,19 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
   串行执行，避免滚动后的第一个按键被吞。
 - **systemd 生命周期解耦：** `TMUX_MANAGED_EXTERNALLY=1`、`tmux -N` 和并列的 Node/tmux unit
   让应用重载不再拥有或向长期业务 pane 发送信号。
+
+## 代理活动 hooks
+
+活动灯需要安装用户级 lifecycle hooks。安装器默认只读，请先检查计划再应用：
+
+```bash
+node server/scripts/install-runtime-activity-hooks.js --check
+node server/scripts/install-runtime-activity-hooks.js --apply --claude --codex
+```
+
+安装 Codex hooks 后，请新开一个 Codex 会话并运行 `/hooks`，审核并信任精确的命令定义。
+最低版本、单独安装某一个 CLI、确认规则和已知边界见[中文活动灯说明](docs/agent-activity-hooks.zh-CN.md)；
+也可查看[英文说明](docs/agent-activity-hooks.md)。
 
 ## 截图
 

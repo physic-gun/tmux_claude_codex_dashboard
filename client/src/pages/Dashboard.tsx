@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../auth';
-import { Group, WindowsResp } from '../types';
+import { Group, WindowActivity, WindowsResp } from '../types';
+import useActivity from '../hooks/useActivity';
 import GroupSidebar from '../components/GroupSidebar';
 import TabBar from '../components/TabBar';
 import TerminalView from '../components/TerminalView';
@@ -22,6 +23,7 @@ export default function Dashboard() {
     return s ? Number(s) : null;
   });
   const [windows, setWindows] = useState<WindowsResp>({ open: [], background: [] });
+  const { activities, setTodo: setActivityTodo, acknowledge: acknowledgeActivity } = useActivity();
   const [activeWindow, setActiveWindow] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('tmuxdash:sidebar') === '1');
   const [tabsCollapsed, setTabsCollapsed] = useState(() => localStorage.getItem('tmuxdash:tabrow') === '1');
@@ -258,6 +260,25 @@ export default function Dashboard() {
 
   const enc = (s: string) => encodeURIComponent(s);
 
+  const currentActivityByWindow = useMemo(() => {
+    const index: Record<string, WindowActivity> = {};
+    if (activeGid == null) return index;
+    for (const item of activities) {
+      if (item.groupId === activeGid) index[item.window] = item;
+    }
+    return index;
+  }, [activeGid, activities]);
+
+  async function setWindowTodo(name: string, todo: boolean) {
+    if (activeGid == null) return;
+    await setActivityTodo(activeGid, name, todo);
+  }
+
+  async function acknowledgeWindow(name: string, clearTodo: boolean, clearAttention: boolean) {
+    if (activeGid == null || (!clearTodo && !clearAttention)) return;
+    await acknowledgeActivity(activeGid, name, clearTodo, clearAttention);
+  }
+
   // Open a PLAIN window in the group's shared working dir. Auto-worktree creation is disabled:
   // new tabs are ordinary windows (no isolated git worktree / branch), so the group dir is never
   // auto-converted to a repo. Existing worktree tabs are unaffected.
@@ -319,6 +340,7 @@ export default function Dashboard() {
         </div>
         <GroupSidebar
           groups={groups}
+          activities={activities}
           activeGid={activeGid}
           onSelect={setActiveGid}
           onCreate={createGroup}
@@ -351,11 +373,14 @@ export default function Dashboard() {
                 windows={windows.open}
                 titles={windows.titles}
                 branches={windows.branches}
+                activities={currentActivityByWindow}
                 active={activeWindow}
                 onSelect={selectWindow}
                 onClose={closeWindow}
                 onAddWindow={addWindow}
                 onReorder={reorderWindows}
+                onSetTodo={setWindowTodo}
+                onAcknowledge={acknowledgeWindow}
               />
             )}
             <button className="icon-btn" title="Claude 会话历史" onClick={() => setSessionsOpen(true)}>🕘</button>
@@ -411,7 +436,12 @@ export default function Dashboard() {
                 <div className="center">没有打开的窗口，点击选项卡栏的 ＋ 新建隔离 agent（独立 worktree + 分支，留空=随机分支名）</div>
               )}
             </div>
-            <BackgroundWindows windows={windows.background} onReopen={reopenWindow} onKill={killWindow} />
+            <BackgroundWindows
+              windows={windows.background}
+              activities={currentActivityByWindow}
+              onReopen={reopenWindow}
+              onKill={killWindow}
+            />
           </>
         )}
         {scmCollapsed && (

@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // `-f` makes a freshly-started tmux server load our headless config (status off,
 // fast escape-time, truecolor) so attached clients render TUIs cleanly.
 const CONF = path.resolve(__dirname, '../tmux.conf');
+export const AGENT_ACTIVITY_OPTION = '@tmuxdash_agent_activity';
 
 export function clientArgs(args = []) {
   return buildTmuxArgs({
@@ -43,7 +44,7 @@ const TMUX_ENV = (() => {
   return e;
 })();
 
-async function run(args, { ignoreError = false } = {}) {
+async function run(args, { ignoreError = false, timeoutMs = 15_000 } = {}) {
   try {
     // timeout: every tmux op here is local + instant; a 15s cap means a wedged tmux server can
     // never hang a request or the periodic archiver loop (it kills the child and rejects instead).
@@ -51,7 +52,7 @@ async function run(args, { ignoreError = false } = {}) {
     const { stdout } = await execFileP('tmux', clientArgs(args), {
       env: TMUX_ENV,
       maxBuffer: 8 * 1024 * 1024,
-      timeout: 15_000,
+      timeout: timeoutMs,
       killSignal: 'SIGKILL',
     });
     return stdout;
@@ -133,6 +134,105 @@ export async function listWindows(session) {
         title: title || '',
       };
     });
+}
+
+// Read every dashboard pane in one tmux invocation. Grouped viewer sessions share the base
+// windows, so only exact `grp_<id>` sessions are admitted here; `_v_` viewers must never create
+// duplicate activity rows. The activity option is pane-scoped and survives browser/Node reconnects.
+export async function listActivityPanes() {
+  const out = await run(
+    [
+      'list-panes',
+      '-a',
+      '-F',
+      `#{session_name}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_active}\t#{pane_current_command}\t#{${AGENT_ACTIVITY_OPTION}}\t#{pane_title}`,
+    ],
+    { timeoutMs: 2_000 }
+  );
+  return parseActivityPaneList(out);
+}
+
+// Read the active pane of one exact base-session window for an input-side state transition. This
+// path has a short hard deadline: if tmux is wedged, execFile kills the child before returning and
+// no delayed acknowledgement can later overwrite a new hook event.
+export async function getWindowActivityPane(session, name) {
+  const out = await run(
+    [
+      'display-message',
+      '-p',
+      '-t',
+      wTarget(session, name),
+      '-F',
+      `#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{${AGENT_ACTIVITY_OPTION}}\t#{pane_title}`,
+    ],
+    { ignoreError: true, timeoutMs: 500 }
+  );
+  if (!out.trim()) return null;
+  const parts = out.trimEnd().split('\t');
+  const [paneId, panePid, command, activityRaw] = parts;
+  if (!/^%\d+$/.test(paneId)) return null;
+  return {
+    paneId,
+    panePid: Number(panePid) || 0,
+    command: command || '',
+    activityRaw: activityRaw || '',
+    title: parts.slice(4).join('\t'),
+  };
+}
+
+// Exported separately so format parsing and viewer filtering can be tested without a tmux server.
+export function parseActivityPaneList(out) {
+  const panes = [];
+  const seen = new Set();
+  for (const line of String(out || '').split('\n')) {
+    if (!line) continue;
+    const parts = line.split('\t');
+    const session = parts[0] || '';
+    const match = /^grp_(\d+)$/.exec(session);
+    if (!match) continue;
+    const [windowId, window, paneId, panePid, active, command, activityRaw] = parts.slice(1, 8);
+    if (!window || !paneId) continue;
+    // A grouped-session topology can still make a shared pane appear more than once on some tmux
+    // versions. The physical pane id is authoritative for de-duplication.
+    if (seen.has(paneId)) continue;
+    seen.add(paneId);
+    panes.push({
+      groupId: Number(match[1]),
+      session,
+      windowId: windowId || '',
+      window,
+      paneId,
+      panePid: Number(panePid) || 0,
+      active: active === '1',
+      command: command || '',
+      activityRaw: activityRaw || '',
+      title: parts.slice(8).join('\t'), // titles may contain tabs, so keep them last
+    });
+  }
+  return panes;
+}
+
+// Compare-and-set by the hook's turn/event id. A tab click can race another browser submitting a
+// new prompt; the old acknowledgement must not overwrite that new turn's working state. `if-shell
+// -F` evaluates and applies the branch inside tmux's command queue, without a read/write gap.
+export async function setPaneActivityIfEvent(paneId, eventId, value) {
+  if (!/^%\d+$/.test(String(paneId || '')) || !/^[A-Za-z0-9._:-]{1,128}$/.test(String(eventId || ''))) {
+    return false;
+  }
+  // Backend-generated activity JSON contains no single quotes (all free-form fields are filtered),
+  // so single-quoting preserves it as one tmux command argument.
+  if (String(value).includes("'")) return false;
+  const condition = `#{m:*"eventId":"${eventId}"*,#{${AGENT_ACTIVITY_OPTION}}}`;
+  const command = `set-option -p -t ${paneId} ${AGENT_ACTIVITY_OPTION} '${value}' ; display-message -p 1`;
+  try {
+    const out = await run(
+      ['if-shell', '-F', '-t', paneId, condition, command, 'display-message -p 0'],
+      { timeoutMs: 500 }
+    );
+    return out.trim().split('\n').at(-1) === '1';
+  } catch {
+    return false;
+  }
 }
 
 export async function newWindow(session, name, cwd = null) {

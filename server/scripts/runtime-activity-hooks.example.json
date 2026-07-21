@@ -1,0 +1,80 @@
+{
+  "note": "Illustrative shapes only. Run install-runtime-activity-hooks.js so absolute paths are generated safely for this host.",
+  "claude": {
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "AskUserQuestion",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "'/absolute/path/to/node' '/absolute/path/to/runtime-activity-hook.js' --agent claude --tmux-dashboard-runtime-activity-v1",
+              "timeout": 3
+            }
+          ]
+        }
+      ],
+      "PermissionRequest": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "'/absolute/path/to/node' '/absolute/path/to/runtime-activity-hook.js' --agent claude --tmux-dashboard-runtime-activity-v1",
+              "timeout": 3
+            }
+          ]
+        }
+      ],
+      "Notification": [
+        {
+          "matcher": "permission_prompt|idle_prompt|agent_needs_input",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "'/absolute/path/to/node' '/absolute/path/to/runtime-activity-hook.js' --agent claude --tmux-dashboard-runtime-activity-v1",
+              "timeout": 3
+            }
+          ]
+        }
+      ],
+      "StopFailure": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "'/absolute/path/to/node' '/absolute/path/to/runtime-activity-hook.js' --agent claude --tmux-dashboard-runtime-activity-v1",
+              "timeout": 3
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "codex": {
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "^request_user_input$",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "'/absolute/path/to/node' '/absolute/path/to/runtime-activity-hook.js' --agent codex --tmux-dashboard-runtime-activity-v1",
+              "timeout": 3
+            }
+          ]
+        }
+      ],
+      "PermissionRequest": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "'/absolute/path/to/node' '/absolute/path/to/runtime-activity-hook.js' --agent codex --tmux-dashboard-runtime-activity-v1",
+              "timeout": 3
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
