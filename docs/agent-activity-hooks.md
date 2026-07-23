@@ -69,9 +69,14 @@ run `--check` and `--apply` again so the managed command is updated.
   configuration and emits a supported event.
 - Green stays visible even on the active tab. A green-only tab is acknowledged by pressing Enter in
   its terminal. Clicking a red+green tab clears both; clicking a red+yellow tab clears only red.
+- If a CLI misses a lifecycle event, right-click the tab and choose **Mark working manually**. The
+  yellow fallback is stored in SQLite and can be shown even before an agent is detected. A normal
+  hook event with a newer timestamp takes precedence. Selecting the tab does not clear the fallback;
+  use the same context menu to cancel it.
 - Standalone Ctrl+C or Esc can mark an active/waiting turn as interrupted. Arrow-key escape sequences
   and newlines inside pasted text are not treated as acknowledgement keys.
-- A manual red todo can coexist with a yellow, green, or gray runtime indicator.
+- A manual red todo can coexist with a manual or hook-driven yellow state, or with a green/gray
+  runtime indicator.
 
 The helper writes no output, uses short timeouts, and fails open. Missing tmux state or a helper error
 does not block prompts, tools, permissions, or turn completion.

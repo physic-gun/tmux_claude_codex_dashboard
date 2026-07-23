@@ -44,7 +44,8 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 |  | 功能 | 说明 |
 |---|---|---|
 | 🗂️ | **分组 → 选项卡** | 每个用户可建多个命名分组（每组 = 一个常驻 tmux session）；选项卡就是 tmux 窗口。关闭选项卡只转后台——进程仍在跑——可随时恢复或彻底结束。 |
-| 🚦 | **代理活动灯** | Claude Code / Codex CLI 工作时亮黄灯；完成、等待、失败或中断时亮绿灯；空闲显示灰灯。右键选项卡可添加跨设备持久化的红色待办。 |
+| 🚦 | **代理活动灯** | Claude Code / Codex CLI 工作时亮黄灯；完成、等待、失败或中断时亮绿灯；空闲显示灰灯。右键选项卡可添加持久红色待办，也可在 hook 漏报时手动补黄灯。 |
+| 🎨 | **终端配色** | 内置 7 套深色、浅色、彩色和高活力 CLI 配色，所有已打开终端实时切换；选择写入账号并跨设备同步。 |
 | 📋 | **剪贴板中转** | 从原始输出流捕获终端 **OSC 52** 复制（claude 的 `/copy`、选中即复制），即使浏览器拦截系统剪贴板也不丢；一键回填或发送回去。 |
 | 📄 | **文件预览** | 复制一段文件路径（绝对路径，或相对代理运行目录），内容在下方分栏只读预览——支持 Markdown 渲染与放大悬浮窗。 |
 | 📁 | **文件浏览器** | 悬浮可拖拽的文件管理器（右下角 📁），默认定位到窗口工作目录：浏览目录、一键**复制路径**或**发送给代理**、预览文本/Markdown、`cd`，并可新建 / 重命名 / 删除 / **上传（拖拽）** / 下载；地址栏可直接跳转到任意路径。 |
@@ -52,13 +53,18 @@ cd server && node src/server.js               # → http://<局域网IP>:6880
 | ⌨️ | **直发编辑器** | `Ctrl+G` 打开可拖动、可缩放的多行编辑器；作为一次粘贴插入，或 `Ctrl+Enter` **直发**给代理。草稿按选项卡自动保存。 |
 | 🌿 | **Git 面板** | 右侧源码栏显示仓库改动 /「落后远程」，内置 diff 查看与 commit · pull · push。 |
 | 🕘 | **恢复与存档** | 一键 resume 此前的 claude 会话；定期 pane 快照可辅助恢复崩溃前最近的滚动内容。 |
-| 📱 | **移动端** | 屏幕键盘、单指拖选复制、点按不弹系统键盘——在手机上也能盯着代理。 |
+| 📱 | **移动端** | 输入按钮、多行编辑器和屏幕键盘跟随手机可见视窗，自动适应浏览器栏与原生软键盘后的实际宽高。 |
 | 🔒 | **鉴权与 HTTPS** | JWT 登录、管理员增删用户；可选自签名 HTTPS，让局域网也能用剪贴板。 |
 
 ## 近期更新（2026-07）
 
 - **基于 lifecycle hook 的代理活动灯：** 使用 Claude/Codex 官方 hooks 显示黄色工作、绿色关注、
   灰色空闲状态，不解析终端文本；手工红色待办保存在 SQLite，后台窗口和跨设备访问也会保留。
+  hook 漏报时可右键手动补黄灯，之后时间更新更晚的正常 lifecycle 事件自动接管。
+- **账号同步终端配色：** Tokyo Night 及 6 套浅色/彩色预设可实时预览，不重建 xterm、不重连
+  WebSocket；终端外边距同步背景色，浅色方案不会留下深色边框。
+- **移动端可见视窗输入层：** 只有当前活动的池化终端显示移动输入层；竖屏、横屏及原生软键盘
+  改变视窗后，编辑器和自定义键盘仍保持在可见区域，并按实测键盘高度给 xterm 留位后重新 fit。
 - **识别代理会话标题：** Claude 继续使用 OSC 标题；Codex CLI 根据 pane 正在打开的 rollout 文件和
   Codex 只读状态库精确解析 root thread 标题，支持 Linux/macOS。标题不可用或重复时回退到稳定窗口名。
 - **按前台进程路由滚轮：** 服务端核验真实前台命令。Claude 启用 SGR 鼠标时保持应用原生滚动；
@@ -79,6 +85,18 @@ node server/scripts/install-runtime-activity-hooks.js --apply --claude --codex
 安装 Codex hooks 后，请新开一个 Codex 会话并运行 `/hooks`，审核并信任精确的命令定义。
 最低版本、单独安装某一个 CLI、确认规则和已知边界见[中文活动灯说明](docs/agent-activity-hooks.zh-CN.md)；
 也可查看[英文说明](docs/agent-activity-hooks.md)。
+
+## 终端配色
+
+打开**设置 → CLI 配色**可实时预览并保存 7 套内置方案：Tokyo Night、GitHub Light、
+Catppuccin Latte、Ayu Light、Gruvbox Light、Bluloco Light 和 Horizon Bright。
+预览只重绘现有池化终端，不重建终端、不重连 WebSocket；取消会恢复已保存方案，保存后写入
+用户账号。Dashboard 网页外壳的深色/浅色主题仍是独立的设备本地偏好。
+
+配色值静态内置，来源固定为
+[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) 提交
+[`97e244cf98a0eb2ce4339d2069ec1bba6c81f141`](https://github.com/mbadolato/iTerm2-Color-Schemes/commit/97e244cf98a0eb2ce4339d2069ec1bba6c81f141)；
+应用运行时不会联网获取主题数据。
 
 ## 截图
 

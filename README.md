@@ -42,7 +42,8 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
 |  | Feature | What it does |
 |---|---|---|
 | 🗂️ | **Groups → tabs** | Each user gets named groups (one long-lived tmux session each); tabs are tmux windows. Close a tab and it just backgrounds — the process keeps running — reopen or kill it later. |
-| 🚦 | **Agent activity indicators** | Claude Code / Codex CLI turns are yellow while working and green when completed, waiting, failed, or interrupted. Idle agents are gray; right-click a tab for a persistent red todo marker. |
+| 🚦 | **Agent activity indicators** | Claude Code / Codex CLI turns are yellow while working and green when completed, waiting, failed, or interrupted. Idle agents are gray; right-click a tab for a persistent red todo or a manual yellow fallback when a hook is missed. |
+| 🎨 | **Terminal palettes** | Seven built-in dark, light, colorful, and high-energy CLI palettes update every open terminal live. The choice is saved to the account and follows it across devices. |
 | 📋 | **Clipboard relay** | Captures every terminal **OSC 52** copy (Claude's `/copy`, select-to-copy) straight from the stream, so nothing is lost even when the browser blocks the system clipboard. One tap to refill or send it back. |
 | 📄 | **File preview** | Copy a file path (absolute, or relative to the agent's working dir) and its contents open in a read-only split — with Markdown rendering and a pop-out reader. |
 | 📁 | **File explorer** | A draggable file manager (📁 button) anchored to the pane's working dir: browse folders, one-click **copy path** or **send it to the agent**, preview text/Markdown, `cd`, and create / rename / delete / **upload (drag-drop)** / download. An address bar jumps to any path. |
@@ -50,14 +51,21 @@ On first boot a random **admin** password is printed to the log. Open `http://<l
 | ⌨️ | **Direct-send composer** | `Ctrl+G` opens a draggable, resizable multi-line editor; insert as one paste, or **send straight to the agent** with `Ctrl+Enter`. Drafts autosave per tab. |
 | 🌿 | **Git panel** | A side rail shows repo changes / "behind remote", with an inline diff viewer and commit · pull · push. |
 | 🕘 | **Resume & archive** | One-click resume of a previous Claude session; periodic pane snapshots can help recover recent scrollback after a crash. |
-| 📱 | **Mobile** | On-screen keyboard, one-finger drag-select-to-copy, and tap-without-popping-the-OS-keyboard — babysit agents from your phone. |
+| 📱 | **Mobile** | The input buttons, multi-line composer, and on-screen keyboard follow the phone's visible viewport, including browser chrome and the native soft keyboard. |
 | 🔒 | **Auth & HTTPS** | JWT login with admin-managed users; optional self-signed HTTPS so the clipboard works across the LAN. |
 
 ## Recent updates (2026-07)
 
 - **Lifecycle-based agent activity:** official Claude/Codex hooks drive yellow working, green
   attention, and gray idle indicators without parsing terminal text. Manual red todos persist in
-  SQLite, including for background windows and across devices.
+  SQLite, including for background windows and across devices. A manual yellow working state covers
+  missed hooks and yields to a newer normal lifecycle event.
+- **Account-synced terminal palettes:** Tokyo Night plus six light/colorful presets can be previewed
+  live without rebuilding xterm or reconnecting WebSockets. The terminal margin follows the selected
+  background, so light palettes have no dark frame.
+- **Visual-viewport mobile input:** only the active pooled terminal exposes mobile input overlays;
+  the composer and custom keyboard stay inside the currently visible phone viewport in portrait or
+  landscape, and the measured keyboard height is reserved before xterm refits.
 - **Agent-aware tab titles:** Claude keeps its OSC title; Codex CLI tabs resolve the exact root thread
   title from the rollout file opened by the pane and Codex's read-only state database. Linux and
   macOS are supported, and unavailable or duplicate titles fall back to the stable window name.
@@ -82,6 +90,20 @@ After installing Codex hooks, start a new Codex session and use `/hooks` to revi
 exact command definition. See the [activity hook guide](docs/agent-activity-hooks.md) for minimum
 versions, installing only one CLI, acknowledgement behavior, and known limitations. A
 [Simplified Chinese guide](docs/agent-activity-hooks.zh-CN.md) is also available.
+
+## Terminal palettes
+
+Open **Settings → CLI palette** to preview and save one of these built-in presets:
+Tokyo Night, GitHub Light, Catppuccin Latte, Ayu Light, Gruvbox Light, Bluloco Light, and
+Horizon Bright. Previewing redraws the existing pooled terminals in place; it does not recreate
+the terminal or WebSocket. Cancel restores the saved palette, while Save stores the selection on
+the user account. The surrounding dashboard light/dark theme remains a separate device-local
+preference.
+
+Palette values are bundled statically from
+[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) at commit
+[`97e244cf98a0eb2ce4339d2069ec1bba6c81f141`](https://github.com/mbadolato/iTerm2-Color-Schemes/commit/97e244cf98a0eb2ce4339d2069ec1bba6c81f141);
+the running application never fetches theme data from the network.
 
 ## Screenshots
 
