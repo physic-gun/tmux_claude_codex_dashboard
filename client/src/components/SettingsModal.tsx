@@ -5,6 +5,10 @@ import { Dialog, DialogContent, DialogFooter, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
+import {
+  TERMINAL_THEMES,
+  getTerminalTheme,
+} from '../lib/terminalThemes.js';
 
 // Monospace fonts offered for the terminal. Only the primary family name is stored; TerminalView
 // always appends a monospace + CJK fallback so alignment survives a font the device lacks.
@@ -36,13 +40,21 @@ const TERM_FONT_GROUPS: { group: string; fonts: { value: string; label: string }
   },
 ];
 
-// Per-user preferences: scroll-button steps, terminal font, and floating-button opacity.
-export default function SettingsModal({ onClose }: { onClose: () => void }) {
+// Per-user preferences: scroll-button steps, terminal font/theme, and floating-button opacity.
+export default function SettingsModal({
+  onClose,
+  onTerminalThemePreview,
+}: {
+  onClose: () => void;
+  onTerminalThemePreview: (themeId: string) => void;
+}) {
   const { user, updateUser } = useAuth();
+  const originalTerminalTheme = getTerminalTheme(user?.term_theme).id;
   const [small, setSmall] = useState(user?.scroll_step_small ?? 20);
   const [big, setBig] = useState(user?.scroll_step_big ?? 60);
   const [auto, setAuto] = useState(!!user?.scroll_auto);
   const [font, setFont] = useState(user?.term_font ?? '');
+  const [terminalTheme, setTerminalTheme] = useState(originalTerminalTheme);
   const [opacity, setOpacity] = useState(user?.float_opacity ?? 20);
   // Theme is a client-only preference (localStorage, no server round-trip): apply it live on click
   // so the switch is instant, independent of the 保存 button below (which persists server settings).
@@ -55,17 +67,27 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     setTheme(t); // persist + apply to <html> immediately
   }
 
+  function chooseTerminalTheme(themeId: string) {
+    setTerminalTheme(themeId);
+    onTerminalThemePreview(themeId);
+  }
+
+  function cancel() {
+    onTerminalThemePreview(originalTerminalTheme);
+    onClose();
+  }
+
   async function save() {
     setErr('');
     setBusy(true);
     try {
       const r = await api.post('/auth/settings', {
         scroll_step_small: small, scroll_step_big: big, scroll_auto: auto ? 1 : 0,
-        term_font: font, float_opacity: opacity,
+        term_font: font, term_theme: terminalTheme, float_opacity: opacity,
       });
       updateUser({
         scroll_step_small: r.scroll_step_small, scroll_step_big: r.scroll_step_big, scroll_auto: r.scroll_auto,
-        term_font: r.term_font, float_opacity: r.float_opacity,
+        term_font: r.term_font, term_theme: r.term_theme, float_opacity: r.float_opacity,
       });
       onClose();
     } catch (e) {
@@ -79,13 +101,13 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const validBig = auto || (Number.isFinite(big) && big >= 1 && big <= 500);
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open onOpenChange={(o) => { if (!o) cancel(); }}>
       <DialogContent className="settings-modal max-w-[560px]">
         <DialogTitle>设置</DialogTitle>
 
         <div className="section-title">外观</div>
         <div className="setting-row">
-          <label>主题 <span className="muted">（终端画面始终保持深色）</span></label>
+          <label>界面主题</label>
           <span className="theme-toggle">
             <Button size="sm" variant={theme === 'dark' ? 'default' : 'ghost'} onClick={() => chooseTheme('dark')}>
               🌙 深色
@@ -94,6 +116,33 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               ☀️ 浅色
             </Button>
           </span>
+        </div>
+
+        <div className="section-title" style={{ marginTop: 4 }}>CLI 配色 <span className="muted">（账号同步）</span></div>
+        <div className="terminal-theme-list" role="radiogroup" aria-label="CLI 配色">
+          {TERMINAL_THEMES.map((preset) => (
+            <label
+              key={preset.id}
+              className={`terminal-theme-option${terminalTheme === preset.id ? ' selected' : ''}`}
+            >
+              <input
+                type="radio"
+                name="terminal-theme"
+                value={preset.id}
+                checked={terminalTheme === preset.id}
+                onChange={() => chooseTerminalTheme(preset.id)}
+              />
+              <span className="terminal-theme-name">
+                <span>{preset.label}</span>
+                <span className="muted">{preset.description}</span>
+              </span>
+              <span className="terminal-theme-swatches" aria-hidden="true">
+                {preset.swatches.map((color, index) => (
+                  <span key={index} style={{ background: color }} />
+                ))}
+              </span>
+            </label>
+          ))}
         </div>
 
         <div className="section-title" style={{ marginTop: 4 }}>滚动步进</div>
@@ -143,7 +192,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         {(!validSmall || !validBig) && <div className="err small">步进需在范围内（小 1–100，大 1–500）</div>}
         {err && <div className="err small">{err}</div>}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="ghost" onClick={cancel}>取消</Button>
           <Button disabled={busy || !validSmall || !validBig} onClick={save}>保存</Button>
         </DialogFooter>
       </DialogContent>

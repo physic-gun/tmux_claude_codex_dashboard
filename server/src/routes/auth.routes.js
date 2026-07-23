@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { verifyPassword, signToken, hashPassword, authRequired } from '../auth.js';
+import { resolveTerminalThemeSetting } from '../terminalThemes.js';
 
 const router = Router();
 
@@ -16,7 +17,8 @@ router.post('/login', (req, res) => {
     user: {
       id: user.id, username: user.username, is_admin: !!user.is_admin,
       scroll_step_small: user.scroll_step_small, scroll_step_big: user.scroll_step_big,
-      scroll_auto: user.scroll_auto, term_font: user.term_font, float_opacity: user.float_opacity,
+      scroll_auto: user.scroll_auto, term_font: user.term_font, term_theme: user.term_theme,
+      float_opacity: user.float_opacity,
     },
   });
 });
@@ -25,7 +27,8 @@ router.get('/me', authRequired, (req, res) => {
   res.json({
     id: req.user.id, username: req.user.username, is_admin: !!req.user.is_admin,
     scroll_step_small: req.user.scroll_step_small, scroll_step_big: req.user.scroll_step_big,
-    scroll_auto: req.user.scroll_auto, term_font: req.user.term_font, float_opacity: req.user.float_opacity,
+    scroll_auto: req.user.scroll_auto, term_font: req.user.term_font, term_theme: req.user.term_theme,
+    float_opacity: req.user.float_opacity,
   });
 });
 
@@ -43,11 +46,20 @@ router.post('/settings', authRequired, (req, res) => {
   // built-in monospace stack). The opacity is a percent, kept slightly visible at the low end.
   const rawFont = typeof req.body?.term_font === 'string' ? req.body.term_font.trim() : '';
   const term_font = /^[A-Za-z0-9 _-]{1,40}$/.test(rawFont) ? rawFont : '';
+  const theme = resolveTerminalThemeSetting(req.body, req.user.term_theme);
+  if (!theme.ok) return res.status(400).json({ error: '未知的终端配色' });
   const float_opacity = clampInt(req.body?.float_opacity, 5, 100, 20);
   db.prepare(
-    'UPDATE users SET scroll_step_small = ?, scroll_step_big = ?, scroll_auto = ?, term_font = ?, float_opacity = ? WHERE id = ?'
-  ).run(small, big, auto, term_font, float_opacity, req.user.id);
-  res.json({ scroll_step_small: small, scroll_step_big: big, scroll_auto: auto, term_font, float_opacity });
+    'UPDATE users SET scroll_step_small = ?, scroll_step_big = ?, scroll_auto = ?, term_font = ?, term_theme = ?, float_opacity = ? WHERE id = ?'
+  ).run(small, big, auto, term_font, theme.value, float_opacity, req.user.id);
+  res.json({
+    scroll_step_small: small,
+    scroll_step_big: big,
+    scroll_auto: auto,
+    term_font,
+    term_theme: theme.value,
+    float_opacity,
+  });
 });
 
 router.post('/change-password', authRequired, (req, res) => {

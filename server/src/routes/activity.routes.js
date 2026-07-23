@@ -3,7 +3,7 @@ import { db } from '../db.js';
 import { authRequired } from '../auth.js';
 import { ah } from '../asyncHandler.js';
 import { activityWindowKey, getActivitySnapshot } from '../activity.js';
-import { listActivityWindowsForUser } from '../activityStore.js';
+import { isManualWorking, listActivityWindowsForUser } from '../activityStore.js';
 
 const router = Router();
 router.use(authRequired);
@@ -18,10 +18,12 @@ router.get('/', ah(async (req, res) => {
     observedAt: snapshot.observedAt,
     windows: rows.map((row) => {
       const activity = snapshot.byWindow.get(activityWindowKey(row.group_id, row.name));
+      const manualWorking = isManualWorking(row.manual_working_at, activity?.updatedAt);
       return {
         groupId: row.group_id,
         window: row.name,
         todo: Boolean(row.todo),
+        manualWorking,
         agent: activity?.agent || null,
         phase: activity?.phase || null,
         reason: activity?.reason || null,

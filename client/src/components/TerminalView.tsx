@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState, type TouchEvent as ReactTouchEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Terminal } from '@xterm/xterm';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type TouchEvent as ReactTouchEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { Keyboard, SquarePen, X } from 'lucide-react';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
@@ -11,6 +21,8 @@ import { filePathCandidate, isMarkdownPath, fmtSize, renderMarkdown, type FileVi
 import { normalizeTerminalSelection } from '../lib/terminalSelection.js';
 import FloatingPanel from './FloatingPanel';
 import FileExplorer from './FileExplorer';
+import useVisualViewport from '../hooks/useVisualViewport';
+import { mobileKeyboardHeight } from '../lib/visualViewport.js';
 
 // ── Clipboard relay store ───────────────────────────────────────────────────────────────────
 // The app's OSC 52 copies are kept in an in-app list (the reliable "剪贴板中转"), per terminal
@@ -223,6 +235,7 @@ export default function TerminalView({
   stepBig = 60,
   scrollAuto = false,
   fontFamily,
+  terminalTheme,
   selectMode = false,
   mobile = false,
   active = true,
@@ -233,6 +246,7 @@ export default function TerminalView({
   stepBig?: number;
   scrollAuto?: boolean;
   fontFamily?: string;
+  terminalTheme: ITheme;
   selectMode?: boolean;
   mobile?: boolean;
   // Terminal-pool mode (Dashboard keeps every visited tab mounted, hidden via display:none, so
@@ -321,9 +335,12 @@ export default function TerminalView({
   const lastFilePathRef = useRef<string | null>(null);
   // On-screen English keyboard (mobile): docked at the CLI bottom, keys sent live to the pty.
   const [kbdOpen, setKbdOpen] = useState(false);
+  const [mobileKbdHeight, setMobileKbdHeight] = useState(0);
+  const mobileKbdRef = useRef<HTMLDivElement>(null);
   // Floating file explorer (📁 FAB): browse/manage host files, anchored to this pane's cwd.
   const [explorerOpen, setExplorerOpen] = useState(false);
   const draftKey = `tmuxdash:draft:${gid}:${windowName}`;
+  const visualViewport = useVisualViewport(mobile && active);
 
   // ── Overlay dismissal ──────────────────────────────────────────────────────────────────────
   // The clipboard list + the three floating panels (clip editor, file zoom, Ctrl+G editor) form a
@@ -383,6 +400,7 @@ export default function TerminalView({
 
   // Keep the opener current; setEditorOpen is stable so this is cheap.
   openEditorRef.current = () => {
+    if (mobileRef.current) setKbdOpen(false);
     setDraft(localStorage.getItem(draftKey) || '');
     setSendErr('');
     setEditorOpen(true);
@@ -519,7 +537,7 @@ export default function TerminalView({
       // Persisted so the A+/A− zoom carries across tabs/reloads. Pooled instances stay mounted
       // across switches, so the [active] effect re-reads this on every re-activation.
       fontSize: Number(localStorage.getItem('tmuxdash:fontSize')) || 13,
-      theme: { background: '#1a1b26', foreground: '#c0caf5' },
+      theme: terminalTheme,
       scrollback: 5000,
       allowProposedApi: true,
       // A plain drag selects text locally (we strip the app's mouse enables). Holding
@@ -1064,6 +1082,13 @@ export default function TerminalView({
     doFitRef.current();
   }, [fontFamily]);
 
+  // xterm redraws the existing renderer when its palette changes. Keep this independent from the
+  // creation effect so live settings preview never reconnects the pty or replaces the terminal.
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) term.options.theme = terminalTheme;
+  }, [terminalTheme]);
+
   // Apply mobile soft-keyboard suppression live when the flag flips; blur the terminal when
   // turning it on so any keyboard already up is dismissed, and close the on-screen keyboard.
   useEffect(() => {
@@ -1071,6 +1096,22 @@ export default function TerminalView({
     if (mobile) { try { termRef.current?.blur(); } catch {} }
     else setKbdOpen(false);
   }, [mobile]);
+
+  // The custom keyboard lives in a body portal, so its height no longer participates in term-col's
+  // flex layout. Mirror its measured height into a spacer and refit xterm whenever it changes.
+  useLayoutEffect(() => {
+    if (!mobile || !active || !kbdOpen) {
+      setMobileKbdHeight(0);
+      return;
+    }
+    const node = mobileKbdRef.current;
+    if (!node) return;
+    const measure = () => setMobileKbdHeight(Math.round(node.getBoundingClientRect().height));
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    return () => observer?.disconnect();
+  }, [mobile, active, kbdOpen, visualViewport.width, visualViewport.height]);
 
   // Pool activation/deactivation. Deactivation cancels any pending system-clipboard write — the
   // relay list keeps the text, and a stale flush on return would clobber whatever the user copied
@@ -1093,7 +1134,7 @@ export default function TerminalView({
 
   // The on-screen keyboard docks below the terminal, so opening/closing it changes the CLI
   // height — refit so cols/rows and the remote pty follow.
-  useEffect(() => { doFitRef.current(); }, [kbdOpen]);
+  useEffect(() => { doFitRef.current(); }, [kbdOpen, mobileKbdHeight]);
 
   // Probe the open clip's text against the filesystem: if it's a path to a real file (absolute, or
   // relative to claude's pane cwd), fetch its content for the preview split. Debounced so editing
@@ -1193,10 +1234,19 @@ export default function TerminalView({
     );
   };
 
+  const plannedMobileKbdHeight = kbdOpen ? mobileKeyboardHeight(visualViewport.height) : 0;
+  const mobilePortalStyle = {
+    left: visualViewport.offsetLeft,
+    top: visualViewport.offsetTop,
+    width: visualViewport.width,
+    height: visualViewport.height,
+    '--mobile-kbd-height': `${plannedMobileKbdHeight}px`,
+  } as CSSProperties;
+
   return (
     <>
       <div className="term-col">
-        <div className={`term-wrap${selectMode ? ' select-mode' : ''}`}>
+        <div className={`term-wrap${selectMode ? ' select-mode' : ''}${mobile ? ' mobile' : ''}`}>
           <div className="terminal" ref={ref} />
           {hint && <div className="term-hint">{hint}</div>}
           {/* Right-middle rail: font zoom (A+/A−) above the scroll buttons. Press-and-hold the
@@ -1246,16 +1296,8 @@ export default function TerminalView({
             </div>
           )}
 
-          {/* Bottom-right floating buttons: clipboard (always) + mobile input entrances. */}
+          {/* Bottom-right terminal tools. Mobile input entrances live in a visual-viewport portal. */}
           <div className="cli-fab" onMouseDown={(e) => e.preventDefault()}>
-            {mobile && (
-              <button className="cli-fab-btn" title="多行输入（打开编辑框）" tabIndex={-1}
-                {...tapHandlers(() => openEditorRef.current())}>输入</button>
-            )}
-            {mobile && (
-              <button className={`cli-fab-btn${kbdOpen ? ' on' : ''}`} title="屏幕键盘" tabIndex={-1}
-                {...tapHandlers(() => setKbdOpen((v) => !v))}>⌨</button>
-            )}
             <button className={`cli-fab-btn${explorerOpen ? ' on' : ''}`} title="文件浏览器" tabIndex={-1}
               {...tapHandlers(() => setExplorerOpen((v) => !v))}>📁</button>
             {clips.length > 0 && (
@@ -1269,8 +1311,8 @@ export default function TerminalView({
           </div>
         </div>
 
-        {mobile && kbdOpen && (
-          <VirtualKeyboard onKey={(d) => sendInputRef.current(d)} onClose={() => setKbdOpen(false)} />
+        {mobile && active && kbdOpen && (
+          <div className="mobile-kbd-spacer" style={{ height: mobileKbdHeight }} aria-hidden="true" />
         )}
       </div>
 
@@ -1347,7 +1389,7 @@ export default function TerminalView({
           {fileBody()}
         </FloatingPanel>
       )}
-      {editorOpen && (
+      {editorOpen && !mobile && (
         <FloatingPanel
           title="多行输入（Ctrl+G）· 草稿按选项卡自动保存"
           storageKey="tmuxdash:panel:editor"
@@ -1390,6 +1432,86 @@ export default function TerminalView({
           onHint={(m) => showHintRef.current(m)}
           onClose={() => setExplorerOpen(false)}
         />
+      )}
+      {mobile && active && typeof document !== 'undefined' && createPortal(
+        <div className="mobile-input-portal" style={mobilePortalStyle}>
+          {editorOpen ? (
+            <section className="mobile-editor-panel" role="dialog" aria-modal="false" aria-label="多行输入">
+              <div className="mobile-editor-head">
+                <span>多行输入</span>
+                <button
+                  className="mobile-editor-close"
+                  title="关闭"
+                  aria-label="关闭"
+                  onClick={() => setEditorOpen(false)}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <textarea
+                className="mobile-editor-textarea"
+                autoFocus
+                value={draft}
+                onChange={(e) => saveDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    sendDraft(true);
+                  } else if (e.altKey && e.key === 'Enter') {
+                    e.preventDefault();
+                    document.execCommand('insertText', false, '\n');
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setEditorOpen(false);
+                  }
+                }}
+                placeholder="输入或粘贴文本"
+              />
+              <div className="mobile-editor-footer">
+                {sendErr && <div className="mobile-editor-error err small">{sendErr}</div>}
+                <button className="btn-ghost" onClick={() => setEditorOpen(false)}>取消</button>
+                <button className="btn-ghost" onClick={() => sendDraft(false)}>插入不发送</button>
+                <button className="btn-primary" onClick={() => sendDraft(true)}>直发 claude</button>
+              </div>
+            </section>
+          ) : (
+            <>
+              <div className={`mobile-input-fab${kbdOpen ? ' above-keyboard' : ''}`}>
+                <button
+                  className="cli-fab-btn mobile-editor-open"
+                  title="多行输入"
+                  tabIndex={-1}
+                  {...tapHandlers(() => openEditorRef.current())}
+                >
+                  <SquarePen size={16} />
+                  <span>输入</span>
+                </button>
+                <button
+                  className={`cli-fab-btn${kbdOpen ? ' on' : ''}`}
+                  title="屏幕键盘"
+                  aria-label="屏幕键盘"
+                  tabIndex={-1}
+                  {...tapHandlers(() => setKbdOpen((value) => !value))}
+                >
+                  <Keyboard size={19} />
+                </button>
+              </div>
+              {kbdOpen && (
+                <div
+                  ref={mobileKbdRef}
+                  className="mobile-vkbd-shell"
+                  style={{ height: plannedMobileKbdHeight }}
+                >
+                  <VirtualKeyboard
+                    onKey={(data) => sendInputRef.current(data)}
+                    onClose={() => setKbdOpen(false)}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>,
+        document.body
       )}
     </>
   );

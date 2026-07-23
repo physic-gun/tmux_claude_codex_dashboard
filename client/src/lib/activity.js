@@ -5,6 +5,10 @@ export function getWindowIndicatorKinds(activity) {
   if (!activity) return [];
   const kinds = [];
   if (activity.todo) kinds.push('todo');
+  if (activity.manualWorking) {
+    kinds.push('working');
+    return kinds;
+  }
   if (activity.agent && PHASES.has(activity.phase)) kinds.push(activity.phase);
   return kinds;
 }
@@ -17,7 +21,7 @@ export function getTabClickAck(activity) {
   if (!activity?.todo) return null;
   return {
     clearTodo: true,
-    clearAttention: activity.phase === 'attention',
+    clearAttention: !activity.manualWorking && activity.phase === 'attention',
   };
 }
 
@@ -30,6 +34,10 @@ export function getGroupIndicatorKinds(activities) {
 
   for (const activity of activities || []) {
     todo ||= !!activity?.todo;
+    if (activity?.manualWorking) {
+      working = true;
+      continue;
+    }
     if (!activity?.agent) continue;
     working ||= activity.phase === 'working';
     attention ||= activity.phase === 'attention';

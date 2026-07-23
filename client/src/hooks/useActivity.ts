@@ -7,6 +7,7 @@ const emptyWindowActivity = (gid: number, name: string): WindowActivity => ({
   groupId: gid,
   window: name,
   todo: false,
+  manualWorking: false,
   agent: null,
   phase: null,
   reason: null,
@@ -74,6 +75,20 @@ export default function useActivity() {
     }
   }, [load, patchWindow]);
 
+  const setManualWorking = useCallback(async (gid: number, name: string, working: boolean) => {
+    revisionRef.current += 1;
+    try {
+      const result = await api.post(
+        `/groups/${gid}/windows/${encodeURIComponent(name)}/manual-working`,
+        { working },
+      );
+      patchWindow(gid, name, { manualWorking: Boolean(result?.manualWorking) });
+    } finally {
+      revisionRef.current += 1;
+      load().catch(() => {});
+    }
+  }, [load, patchWindow]);
+
   const acknowledge = useCallback(async (
     gid: number,
     name: string,
@@ -104,5 +119,11 @@ export default function useActivity() {
     }
   }, [load, patchWindow]);
 
-  return { activities: snapshot.windows, observedAt: snapshot.observedAt, setTodo, acknowledge };
+  return {
+    activities: snapshot.windows,
+    observedAt: snapshot.observedAt,
+    setTodo,
+    setManualWorking,
+    acknowledge,
+  };
 }

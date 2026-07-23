@@ -11,6 +11,7 @@ const activity = (overrides = {}) => ({
   groupId: 3,
   window: 'main',
   todo: false,
+  manualWorking: false,
   agent: 'claude',
   phase: 'idle',
   reason: 'session_started',
@@ -23,6 +24,12 @@ test('window dots keep todo and runtime state independent', () => {
   assert.deepEqual(getWindowIndicatorKinds(activity({ todo: true, phase: 'working' })), ['todo', 'working']);
   assert.deepEqual(getWindowIndicatorKinds(activity({ todo: true, phase: 'attention' })), ['todo', 'attention']);
   assert.deepEqual(getWindowIndicatorKinds(activity({ agent: null, phase: null })), []);
+  assert.deepEqual(getWindowIndicatorKinds(activity({
+    todo: true, manualWorking: true, agent: null, phase: null,
+  })), ['todo', 'working']);
+  assert.deepEqual(getWindowIndicatorKinds(activity({
+    manualWorking: true, phase: 'attention',
+  })), ['working']);
 });
 
 test('tab clicks clear todo while preserving a running turn', () => {
@@ -48,9 +55,21 @@ test('attention without todo is not acknowledged by selecting the tab', () => {
   assert.equal(getTabClickAck(activity({ phase: 'working' })), null);
 });
 
+test('tab clicks never clear a manual working override', () => {
+  assert.deepEqual(getTabClickAck(activity({
+    todo: true,
+    manualWorking: true,
+    phase: 'attention',
+  })), {
+    clearTodo: true,
+    clearAttention: false,
+  });
+});
+
 test('group dots aggregate each actionable color and suppress idle gray', () => {
   assert.deepEqual(getGroupIndicatorKinds([
     activity({ todo: true, phase: 'idle' }),
+    activity({ window: 'manual', manualWorking: true, agent: null, phase: null }),
     activity({ window: 'worker', phase: 'working' }),
     activity({ window: 'done', agent: 'codex', phase: 'attention' }),
   ]), ['todo', 'working', 'attention']);

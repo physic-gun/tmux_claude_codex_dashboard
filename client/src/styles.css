@@ -30,7 +30,7 @@
 
 /* Light theme. Overrides the app palette, the semantic vars, AND the shadcn/ui design tokens
    (--color-*, emitted at :root by tailwind.css's @theme) so migrated modals/buttons/inputs flip
-   too. The terminal (.term-area + xterm) intentionally stays dark. */
+   too. The terminal palette is an independent account preference. */
 :root[data-theme="light"] {
   --bg: #eaecf3;
   --panel: #ffffff;
@@ -388,7 +388,7 @@ input { font-family: inherit; }
 /* ---------- terminal ---------- */
 /* keep a margin between the CLI and the window border; overflow hidden so the xterm
    never spills and creates an outer scrollbar */
-.term-area { flex: 1; min-height: 0; min-width: 0; background: #1a1b26; padding: 8px 12px; overflow: hidden; }
+.term-area { flex: 1; min-height: 0; min-width: 0; background: var(--term-bg, #1a1b26); padding: 8px 12px; overflow: hidden; }
 /* Terminal-pool slot: one per visited tab; inactive slots are display:none'd (kept mounted). */
 .term-slot { height: 100%; width: 100%; }
 /* Column: terminal fills, the on-screen keyboard (when open) docks below and squeezes it. */
@@ -411,8 +411,7 @@ input { font-family: inherit; }
 .terminal { height: 100%; width: 100%; }
 
 /* ---------- clipboard relay + CLI floating buttons ---------- */
-/* Bottom-right floating buttons: clipboard (always), plus 输入/⌨ on mobile. Sits below the
-   right-middle scroll rail so they don't collide. */
+/* Bottom-right terminal tools. Mobile input controls use their own visual-viewport portal below. */
 .cli-fab {
   position: absolute; right: 8px; bottom: 12px; z-index: 8;
   /* Horizontal row (not a tall vertical stack) so the buttons hug the bottom-right corner and
@@ -426,6 +425,7 @@ input { font-family: inherit; }
 .cli-fab:hover, .cli-fab:focus-within { opacity: 1; }
 /* Kept in its own rule so browsers without :has() still apply the hover/focus rule above. */
 .cli-fab:has(.cli-fab-btn.on) { opacity: 1; }
+.term-wrap.mobile .cli-fab { left: 8px; right: auto; }
 .cli-fab-btn {
   position: relative;
   min-width: 46px; height: 40px; padding: 0 10px;
@@ -589,7 +589,10 @@ input { font-family: inherit; }
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .vkbd-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 2px; }
-.vkbd-hint { font-size: 11px; color: var(--muted); }
+.vkbd-hint {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--muted);
+}
 .vkbd-close {
   background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
   border-radius: 6px; padding: 3px 10px; font-size: 12px;
@@ -606,6 +609,71 @@ input { font-family: inherit; }
 .vkbd-key.fn { font-size: 12px; color: var(--muted); }
 .vkbd-key.mod { font-size: 13px; }
 .vkbd-key.on { background: color-mix(in srgb, var(--accent) 30%, var(--panel-2)); border-color: var(--accent); color: var(--text-strong); }
+
+/* ---------- mobile input controls bound to the Visual Viewport ---------- */
+.mobile-kbd-spacer { flex: 0 0 auto; width: 100%; pointer-events: none; }
+.mobile-input-portal {
+  position: fixed; z-index: 900; overflow: visible; pointer-events: none;
+}
+.mobile-input-fab {
+  position: absolute; right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  display: flex; align-items: center; gap: 8px; pointer-events: auto;
+  touch-action: none; opacity: 1;
+}
+.mobile-input-fab.above-keyboard { bottom: calc(var(--mobile-kbd-height) + 8px); }
+.mobile-input-fab .cli-fab-btn { opacity: 1; }
+.mobile-input-fab .mobile-editor-open { min-width: 72px; gap: 6px; }
+.mobile-vkbd-shell {
+  position: absolute; left: 0; right: 0; bottom: 0; pointer-events: auto;
+  background: var(--code-bg);
+  border-top: 1px solid var(--border); overflow: hidden;
+}
+.mobile-vkbd-shell .vkbd {
+  height: 100%; border-top: none;
+  padding-left: max(6px, env(safe-area-inset-left));
+  padding-right: max(6px, env(safe-area-inset-right));
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
+}
+.mobile-vkbd-shell .vkbd-row { flex: 1 1 0; min-height: 0; }
+.mobile-vkbd-shell .vkbd-key { height: auto; min-height: 0; }
+.mobile-editor-panel {
+  position: absolute;
+  left: max(8px, env(safe-area-inset-left));
+  right: max(8px, env(safe-area-inset-right));
+  top: max(8px, env(safe-area-inset-top));
+  bottom: max(8px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); overflow: hidden; pointer-events: auto;
+}
+.mobile-editor-head {
+  min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 8px 6px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 600;
+}
+.mobile-editor-close {
+  width: 32px; height: 32px; flex: 0 0 32px; display: inline-flex; align-items: center;
+  justify-content: center; padding: 0; background: transparent; border: none; color: var(--muted);
+  border-radius: 6px;
+}
+.mobile-editor-close:hover { color: var(--text-strong); background: var(--panel); }
+.mobile-editor-textarea {
+  flex: 1; min-width: 0; min-height: 0; resize: none; outline: none;
+  margin: 8px; padding: 10px 12px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  font-family: Menlo, Monaco, Consolas, monospace; font-size: 14px; line-height: 1.5;
+}
+.mobile-editor-textarea:focus { border-color: var(--accent); }
+.mobile-editor-footer {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px;
+  padding: 8px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom))
+    max(8px, env(safe-area-inset-left));
+  border-top: 1px solid var(--border);
+}
+.mobile-editor-footer button { white-space: nowrap; }
+.mobile-editor-error { flex: 1 0 100%; margin: 0; }
+
 /* scroll buttons floating at the right-middle of the terminal (a wheel alternative) */
 .scroll-rail {
   position: absolute;
@@ -787,6 +855,32 @@ input { font-family: inherit; }
 }
 .setting-select:focus { border-color: var(--accent); }
 .theme-toggle { display: inline-flex; gap: 6px; }
+.terminal-theme-list {
+  flex-shrink: 0; display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 6px;
+  overflow: hidden;
+}
+.terminal-theme-option {
+  min-width: 0; display: grid; grid-template-columns: 18px minmax(120px, 1fr) 128px;
+  align-items: center; gap: 8px; padding: 7px 9px; cursor: pointer; background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.terminal-theme-option:last-child { border-bottom: none; }
+.terminal-theme-option:hover { background: var(--panel-2); }
+.terminal-theme-option.selected { box-shadow: inset 3px 0 0 var(--accent); background: var(--panel-2); }
+.terminal-theme-option input { width: auto; margin: 0; accent-color: var(--accent); }
+.terminal-theme-name {
+  min-width: 0; display: flex; align-items: baseline; gap: 8px; font-size: 12.5px;
+  overflow: hidden;
+}
+.terminal-theme-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-theme-name .muted { flex-shrink: 0; font-size: 11px; }
+.terminal-theme-swatches {
+  display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(2, 8px);
+  width: 128px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 4px; background: var(--bg);
+}
+.terminal-theme-swatches > span { min-width: 0; }
 .opacity-control { display: inline-flex; align-items: center; gap: 8px; }
 .opacity-control input[type="range"] { width: 120px; accent-color: var(--accent); }
 .opacity-val { width: 40px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -1114,3 +1208,22 @@ kbd {
 
 /* Touch: row actions can't rely on hover, so keep them visible. */
 @media (pointer: coarse) { .fx-actions { opacity: 1; } }
+
+@media (max-width: 480px) {
+  .terminal-theme-option {
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+  .terminal-theme-name { flex-wrap: wrap; row-gap: 1px; }
+  .terminal-theme-swatches { grid-column: 2; width: 100%; }
+  .settings-modal .setting-row { align-items: flex-start; flex-wrap: wrap; }
+  .settings-modal .setting-select { width: 100%; max-width: none; }
+}
+
+.term-wrap.mobile .scroll-rail { right: 28px; }
+.app.mobile-mode .scm-reopen {
+  top: 54px;
+  right: 0;
+  height: 38px;
+  transform: none;
+}

@@ -31,7 +31,7 @@ export function verifyTokenStr(token) {
 export function getUserById(id) {
   return db
     .prepare(
-      'SELECT id, username, is_admin, scroll_step_small, scroll_step_big, scroll_auto, term_font, float_opacity FROM users WHERE id = ?'
+      'SELECT id, username, is_admin, scroll_step_small, scroll_step_big, scroll_auto, term_font, term_theme, float_opacity FROM users WHERE id = ?'
     )
     .get(id);
 }

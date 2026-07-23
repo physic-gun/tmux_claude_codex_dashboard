@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, FormEvent } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, FormEvent } from 'react';
 import type { WindowActivity } from '../types';
 import { getTabClickAck } from '../lib/activity.js';
 import { WindowActivityDots } from './ActivityDots';
@@ -18,6 +18,7 @@ interface Props {
   // Persist a new tab order (array of the open window names). Server reindexes windows.sort_order.
   onReorder: (order: string[]) => Promise<void> | void;
   onSetTodo: (name: string, todo: boolean) => Promise<void> | void;
+  onSetManualWorking: (name: string, working: boolean) => Promise<void> | void;
   onAcknowledge: (name: string, clearTodo: boolean, clearAttention: boolean) => Promise<void> | void;
 }
 
@@ -25,13 +26,14 @@ const STAR_KEY = 'tmuxdash:starredTabs';
 
 export default function TabBar({
   gid, windows, titles, branches, activities, active, onSelect, onClose, onAddWindow, onReorder,
-  onSetTodo, onAcknowledge,
+  onSetTodo, onSetManualWorking, onAcknowledge,
 }: Props) {
   const [wtAdding, setWtAdding] = useState(false);
   const [wtName, setWtName] = useState('');
   const [err, setErr] = useState('');
   // Right-click context menu anchored at the cursor, acting on one tab.
   const [menu, setMenu] = useState<{ x: number; y: number; w: string } | null>(null);
+  const [menuPos, setMenuPos] = useState({ x: 4, y: 4 });
   // Starred/favorite tabs, keyed `${gid}:${window}`, persisted in localStorage (no backend). A star
   // is a pure marker — it doesn't reorder the tab, so it composes cleanly with manual 前移/后移.
   const [starred, setStarred] = useState<Set<string>>(() => {
@@ -41,6 +43,7 @@ export default function TabBar({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const starK = (w: string) => `${gid}:${w}`;
   const isStar = (w: string) => starred.has(starK(w));
@@ -90,6 +93,24 @@ export default function TabBar({
       setErr((e as Error).message);
     });
   }
+
+  function setManualWorking(w: string, working: boolean) {
+    setMenu(null);
+    Promise.resolve(onSetManualWorking(w, working)).catch((e) => {
+      setErr((e as Error).message);
+    });
+  }
+
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!menu || !el) return;
+    const margin = 4;
+    const rect = el.getBoundingClientRect();
+    setMenuPos({
+      x: Math.max(margin, Math.min(menu.x, window.innerWidth - rect.width - margin)),
+      y: Math.max(margin, Math.min(menu.y, window.innerHeight - rect.height - margin)),
+    });
+  }, [menu]);
 
   // Vertical wheel over the (single-row) tab strip scrolls it horizontally. Native non-passive
   // listener so preventDefault sticks; only hijack the wheel when there's actual overflow, so a
@@ -182,7 +203,7 @@ export default function TabBar({
                 e.preventDefault();
                 setMenu({ x: e.clientX, y: e.clientY, w });
               }}
-              title={`${label === w ? w : `${label}  ·  窗口: ${w}`}\n${kind}\n（右键：排序、收藏、待办）`}
+              title={`${label === w ? w : `${label}  ·  窗口: ${w}`}\n${kind}\n（右键：排序、收藏、工作状态、待办）`}
             >
               <WindowActivityDots activity={activity} />
               {isStar(w) && <span className="tab-star" title="已收藏">★</span>}
@@ -227,10 +248,11 @@ export default function TabBar({
         <>
           <div className="tab-menu-backdrop" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
           <div
+            ref={menuRef}
             className="tab-menu"
             style={{
-              left: Math.max(4, Math.min(menu.x, window.innerWidth - 170)),
-              top: Math.max(4, Math.min(menu.y, window.innerHeight - 210)),
+              left: menuPos.x,
+              top: menuPos.y,
             }}
           >
             <button disabled={menuIdx <= 0} onClick={() => { move(menu.w, -1); setMenu(null); }}>
@@ -248,6 +270,9 @@ export default function TabBar({
             <div className="tab-menu-sep" />
             <button onClick={() => { toggleStar(menu.w); setMenu(null); }}>
               {isStar(menu.w) ? '☆ 取消收藏' : '★ 收藏'}
+            </button>
+            <button onClick={() => setManualWorking(menu.w, !activities?.[menu.w]?.manualWorking)}>
+              {activities?.[menu.w]?.manualWorking ? '○ 取消手动工作状态' : '● 手动标为工作中'}
             </button>
             <button onClick={() => setTodo(menu.w, !activities?.[menu.w]?.todo)}>
               {activities?.[menu.w]?.todo ? '○ 取消待办' : '● 标记待办'}

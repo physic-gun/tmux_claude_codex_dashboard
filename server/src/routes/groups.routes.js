@@ -13,7 +13,11 @@ import { latestSessionId } from '../sessions.js';
 import { codexSessionsForWindows } from '../codexSessions.js';
 import { isClaudePane } from '../scrollRouting.js';
 import { acknowledgeWindowActivity } from '../activity.js';
-import { findOwnedActivityWindow, setOwnedWindowTodo } from '../activityStore.js';
+import {
+  findOwnedActivityWindow,
+  setOwnedWindowManualWorking,
+  setOwnedWindowTodo,
+} from '../activityStore.js';
 import {
   findGitRepos, isGitRepo, repoStatus, repoFiles, fileDiff, gitCommit, gitPull, gitPush, gitFetch,
   ensureRepoInited, addWorktree, removeWorktree, refreshNestedRepoIgnore, branchExists,
@@ -552,6 +556,21 @@ router.post('/:gid/windows/:name/todo', loadGroup, (req, res) => {
   );
   if (!row) return res.status(404).json({ error: '窗口不存在' });
   res.json({ ok: true, todo: Boolean(row.todo) });
+});
+
+router.post('/:gid/windows/:name/manual-working', loadGroup, (req, res) => {
+  if (typeof req.body?.working !== 'boolean') {
+    return res.status(400).json({ error: 'working 必须是布尔值' });
+  }
+  const row = setOwnedWindowManualWorking(
+    db,
+    req.user.id,
+    req.group.id,
+    req.params.name,
+    req.body.working
+  );
+  if (!row) return res.status(404).json({ error: '窗口不存在' });
+  res.json({ ok: true, manualWorking: row.manual_working_at != null });
 });
 
 router.post('/:gid/windows/:name/ack', loadGroup, ah(async (req, res) => {

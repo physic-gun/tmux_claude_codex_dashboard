@@ -8,6 +8,8 @@ export interface User {
   scroll_auto?: number;
   // Preferred terminal font family ('' / undefined → the built-in monospace stack).
   term_font?: string;
+  // Account-synced xterm palette id. Unknown/missing values fall back to Tokyo Night.
+  term_theme?: string;
   // Resting opacity (percent, 5–100) of the floating restore buttons. Default 20.
   float_opacity?: number;
 }
@@ -37,6 +39,8 @@ export interface WindowActivity {
   groupId: number;
   window: string;
   todo: boolean;
+  // Explicit fallback marker. It wins only until a newer lifecycle event arrives.
+  manualWorking: boolean;
   agent: AgentKind | null;
   phase: ActivityPhase | null;
   reason: string | null;

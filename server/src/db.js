@@ -85,6 +85,9 @@ ensureColumn('windows', 'branch', 'branch TEXT');
 // Manual attention marker. Unlike transient agent activity (kept on the tmux pane), todo follows
 // the persisted window across browser/device reconnects and while the tab is in the background.
 ensureColumn('windows', 'todo', 'todo INTEGER NOT NULL DEFAULT 0');
+// Manual working fallback for lifecycle events that a CLI failed to emit. A later hook timestamp
+// takes precedence without requiring a read path to mutate this persisted marker.
+ensureColumn('windows', 'manual_working_at', 'manual_working_at INTEGER');
 // Per-user scroll-button step sizes (lines per click of the small / big scroll buttons).
 ensureColumn('users', 'scroll_step_small', 'scroll_step_small INTEGER NOT NULL DEFAULT 20');
 ensureColumn('users', 'scroll_step_big', 'scroll_step_big INTEGER NOT NULL DEFAULT 60');
@@ -93,6 +96,8 @@ ensureColumn('users', 'scroll_step_big', 'scroll_step_big INTEGER NOT NULL DEFAU
 ensureColumn('users', 'scroll_auto', 'scroll_auto INTEGER NOT NULL DEFAULT 0');
 // Preferred terminal font family (a single font name; '' → the built-in monospace stack).
 ensureColumn('users', 'term_font', "term_font TEXT NOT NULL DEFAULT ''");
+// Account-level terminal palette. The server validates values against the built-in client themes.
+ensureColumn('users', 'term_theme', "term_theme TEXT NOT NULL DEFAULT 'tokyo-night'");
 // Resting opacity (percent, 5–100) of the floating restore buttons. Default 20%.
 ensureColumn('users', 'float_opacity', 'float_opacity INTEGER NOT NULL DEFAULT 20');
 

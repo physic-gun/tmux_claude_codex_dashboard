@@ -13,6 +13,7 @@ import HelpModal from '../components/HelpModal';
 import SettingsModal from '../components/SettingsModal';
 import SessionHistoryModal from '../components/SessionHistoryModal';
 import RepoPanel from '../components/RepoPanel';
+import { getTerminalTheme } from '../lib/terminalThemes.js';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -23,7 +24,12 @@ export default function Dashboard() {
     return s ? Number(s) : null;
   });
   const [windows, setWindows] = useState<WindowsResp>({ open: [], background: [] });
-  const { activities, setTodo: setActivityTodo, acknowledge: acknowledgeActivity } = useActivity();
+  const {
+    activities,
+    setTodo: setActivityTodo,
+    setManualWorking: setActivityManualWorking,
+    acknowledge: acknowledgeActivity,
+  } = useActivity();
   const [activeWindow, setActiveWindow] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('tmuxdash:sidebar') === '1');
   const [tabsCollapsed, setTabsCollapsed] = useState(() => localStorage.getItem('tmuxdash:tabrow') === '1');
@@ -42,6 +48,12 @@ export default function Dashboard() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  // Settings previews update every pooled xterm live. Saving updates the account; cancelling sends
+  // the persisted id back through the same state without remounting a terminal or WebSocket.
+  const [terminalThemeId, setTerminalThemeId] = useState(() => getTerminalTheme(user?.term_theme).id);
+  useEffect(() => {
+    setTerminalThemeId(getTerminalTheme(user?.term_theme).id);
+  }, [user?.term_theme]);
 
   function toggleSidebar() {
     setCollapsed((c) => {
@@ -274,6 +286,11 @@ export default function Dashboard() {
     await setActivityTodo(activeGid, name, todo);
   }
 
+  async function setWindowManualWorking(name: string, working: boolean) {
+    if (activeGid == null) return;
+    await setActivityManualWorking(activeGid, name, working);
+  }
+
   async function acknowledgeWindow(name: string, clearTodo: boolean, clearAttention: boolean) {
     if (activeGid == null || (!clearTodo && !clearAttention)) return;
     await acknowledgeActivity(activeGid, name, clearTodo, clearAttention);
@@ -326,11 +343,15 @@ export default function Dashboard() {
   }
 
   // Drive the floating-button resting opacity from the user's setting (percent → 0–1 var).
-  const appStyle = { '--float-opacity': String((user?.float_opacity ?? 20) / 100) } as CSSProperties;
+  const terminalTheme = getTerminalTheme(terminalThemeId);
+  const appStyle = {
+    '--float-opacity': String((user?.float_opacity ?? 20) / 100),
+    '--term-bg': terminalTheme.theme.background,
+  } as CSSProperties;
 
   return (
     <div
-      className={`app${collapsed ? ' sidebar-collapsed' : ''}${scmCollapsed ? ' scm-collapsed' : ''}`}
+      className={`app${collapsed ? ' sidebar-collapsed' : ''}${scmCollapsed ? ' scm-collapsed' : ''}${mobile ? ' mobile-mode' : ''}`}
       style={appStyle}
     >
       <aside className="sidebar">
@@ -380,6 +401,7 @@ export default function Dashboard() {
                 onAddWindow={addWindow}
                 onReorder={reorderWindows}
                 onSetTodo={setWindowTodo}
+                onSetManualWorking={setWindowManualWorking}
                 onAcknowledge={acknowledgeWindow}
               />
             )}
@@ -427,6 +449,7 @@ export default function Dashboard() {
                     stepBig={user?.scroll_step_big ?? 60}
                     scrollAuto={!!user?.scroll_auto}
                     fontFamily={user?.term_font}
+                    terminalTheme={terminalTheme.theme}
                     selectMode={selectMode}
                     mobile={mobile}
                   />
@@ -454,7 +477,12 @@ export default function Dashboard() {
       </aside>
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          onTerminalThemePreview={setTerminalThemeId}
+        />
+      )}
       {sessionsOpen && (
         <SessionHistoryModal onClose={() => setSessionsOpen(false)} onResume={resumeSession} />
       )}

@@ -43,6 +43,7 @@ function phaseLabel(activity: WindowActivity) {
 
 function windowTitle(kind: IndicatorKind, activity: WindowActivity) {
   if (kind === 'todo') return '手动标记的待办';
+  if (kind === 'working' && activity.manualWorking) return '手动标记为正在工作';
   const detail = activity.detail ? `：${activity.detail}` : '';
   let when = '';
   if (activity.updatedAt) {
